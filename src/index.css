@@ -1,0 +1,54 @@
+@import "tailwindcss";
+
+/* Mobile Safe Area and Viewport optimization */
+.safe-area-pb {
+  padding-bottom: max(0.5rem, env(safe-area-inset-bottom));
+}
+
+@keyframes bell-ring {
+  0%, 100% { transform: rotate(0deg); }
+  15% { transform: rotate(12deg); }
+  30% { transform: rotate(-12deg); }
+  45% { transform: rotate(8deg); }
+  60% { transform: rotate(-6deg); }
+  75% { transform: rotate(0deg); }
+}
+
+.animate-bell-ring {
+  animation: bell-ring 2.5s ease-in-out infinite;
+  transform-origin: top center;
+}
+
+@media print {
+  @page {
+    margin: 10mm;
+    size: auto;
+  }
+
+  html, body {
+    background: #ffffff !important;
+    color: #000000 !important;
+    margin: 0 !important;
+    padding: 0 !important;
+    -webkit-print-color-adjust: exact !important;
+    print-color-adjust: exact !important;
+  }
+
+  /* Hide all app chrome during print */
+  header, aside, nav, .no-print, button:not(.allow-print) {
+    display: none !important;
+  }
+
+  /* Isolate printable section */
+  .printable-content {
+    display: block !important;
+    visibility: visible !important;
+    position: static !important;
+    width: 100% !important;
+    margin: 0 !important;
+    padding: 0 !important;
+    box-shadow: none !important;
+    border: none !important;
+  }
+}
+

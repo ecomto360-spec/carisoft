@@ -1,0 +1,11 @@
+export { ClientsRouter as Clients } from './clients/ClientsRouter';
+export { ProductsRouter as Products } from './products/ProductsRouter';
+export { LogisticsRouter as Logistics } from './logistics/LogisticsRouter';
+export { OrdersRouter as Orders } from './orders/OrdersRouter';
+export { DeliveriesRouter as Deliveries } from './deliveries/DeliveriesRouter';
+export { InvoicesRouter as Invoices } from './invoices/InvoicesRouter';
+export { PaymentsRouter as Payments } from './payments/PaymentsRouter';
+export { ReportsRouter as Reports } from './reports/ReportsRouter';
+export { UsersRouter as Users } from './users/UsersRouter';
+export { SettingsModule as Settings } from './settings/SettingsModule';
+export { MaintenanceModule as Maintenance } from './maintenance/MaintenanceModule';

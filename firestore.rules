@@ -1,0 +1,68 @@
+rules_version = '2';
+service cloud.firestore {
+  match /databases/{database}/documents {
+    
+    function isAuthenticated() {
+      return request.auth != null;
+    }
+
+    function isSuperAdmin() {
+      return isAuthenticated() && request.auth.token.role == 'superadmin';
+    }
+
+    function getUserCompanyId() {
+      // Fallback to reading the doc if custom claims aren't fully propagated yet
+      return request.auth.token.companyId != null 
+        ? request.auth.token.companyId 
+        : (exists(/databases/$(database)/documents/users/$(request.auth.uid)) 
+            ? get(/databases/$(database)/documents/users/$(request.auth.uid)).data.companyId 
+            : null);
+    }
+
+    match /_system_check/{id} {
+      allow read: if true;
+    }
+
+    match /test/{id} {
+      allow read: if true;
+    }
+
+    match /username_mappings/{username} {
+      allow read: if true;
+      allow write: if isAuthenticated();
+    }
+
+    // Activation Requests (Trial users are unauthenticated)
+    match /activationRequests/{requestId} {
+      allow create: if true;
+      allow read, update, delete: if isSuperAdmin() || true; // Kept true for now since previous rules allowed it
+    }
+
+    // Client Demo Anomalies & Bug Reports
+    match /anomalies/{anomalyId} {
+      allow create: if true;
+      allow read, update, delete: if true;
+    }
+
+    // Customers (SaaS logic - read by SuperAdmin)
+    match /customers/{customerId} {
+      allow read, write: if true;
+    }
+
+    // Collection companies (onboarding + profil + SaaS client management)
+    match /companies/{companyId} {
+      allow read, write: if true;
+    }
+
+    // Collection users
+    match /users/{userId} {
+      allow read, write: if true;
+    }
+
+    // Règle d'isolation stricte par défaut pour toutes les autres collections (Multi-tenant RLS)
+    match /{collectionName}/{docId} {
+      allow read, update, delete: if isSuperAdmin() || (isAuthenticated() && resource.data.companyId == getUserCompanyId());
+      allow create: if isSuperAdmin() || (isAuthenticated() && request.resource.data.companyId == getUserCompanyId());
+    }
+  }
+}

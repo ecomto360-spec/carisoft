@@ -1,0 +1,6 @@
+{
+  "name": "CARISOFT.next",
+  "description": "Système ERP SaaS pour gestion de carrière d'agrégats, pesée, livraisons, facturation et sécurité des accès.",
+  "requestFramePermissions": [],
+  "majorCapabilities": ["MAJOR_CAPABILITY_SERVER_SIDE_GEMINI_API"]
+}

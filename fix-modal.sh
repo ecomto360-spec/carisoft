@@ -1,0 +1,2 @@
+sed -i "s/localStorage.setItem('active_license_key', key.trim());/if (user?.companyId) {\n        localStorage.setItem(\`carisoft_tenant_\${user.companyId}_license_key\`, key.trim());\n        window.dispatchEvent(new CustomEvent('license_activated', { detail: { companyId: user.companyId } }));\n      }/g" src/components/licensing/LicenseActivationModal.tsx
+sed -i "s/window.dispatchEvent(new Event('license_activated'));//g" src/components/licensing/LicenseActivationModal.tsx
