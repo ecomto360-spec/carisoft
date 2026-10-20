@@ -68,7 +68,7 @@ export const en: TranslationKey = {
   menu: {
     dashboard: 'Dashboard',
     clients: 'Clients',
-    products: 'Products',
+    products: 'Products & Tariffs',
     logistics: 'Trucks & Drivers',
     orders: 'Orders',
     deliveries: 'Delivery Notes',
@@ -187,7 +187,7 @@ export const en: TranslationKey = {
     code: 'Code',
     nameSocial: 'Name / Company Name',
     typeConvention: 'Type / Convention',
-    initialDebt: 'Initial Debt',
+    initialDebt: 'Initial Balance',
     creditLimit: 'Credit Limit',
     balanceDebt: 'Balance / Debt',
     unlimited: 'Unlimited',

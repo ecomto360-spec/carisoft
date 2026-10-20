@@ -66,7 +66,7 @@ export const fr = {
   menu: {
     dashboard: 'Tableau de bord',
     clients: 'Clients',
-    products: 'Produits',
+    products: 'Produits & Tarifs',
     logistics: 'Camions & Chauffeurs',
     orders: 'Commandes',
     deliveries: 'Bons de livraison',
@@ -185,7 +185,7 @@ export const fr = {
     code: 'Code',
     nameSocial: 'Nom / Raison Sociale',
     typeConvention: 'Type / Convention',
-    initialDebt: 'Dette Initiale',
+    initialDebt: 'Solde Initial',
     creditLimit: 'Plafond Crédit',
     balanceDebt: 'Solde / Dette',
     unlimited: 'Non limité',
@@ -212,7 +212,7 @@ export const fr = {
 
   // Products
   products: {
-    title: 'Catalogue des Produits',
+    title: 'Catalogue des Produits & Tarifs',
     subtitle: 'Granulats, sables, tout-venant, graves et gravillons',
     newProduct: 'Nouveau Produit',
     code: 'Code Produit',

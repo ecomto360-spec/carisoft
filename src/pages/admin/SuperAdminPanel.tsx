@@ -6,17 +6,21 @@ import { db } from '../../db/db';
 import { 
   Shield, Key, Copy, CheckCircle, AlertTriangle, Users, 
   Search, Phone, Mail, Calendar, Clock, Edit3, Trash2, 
-  PlusCircle, RefreshCw, Check, Building, MapPin, Sparkles, Filter, X
+  PlusCircle, RefreshCw, Check, Building, MapPin, Sparkles, Filter, X,
+  Laptop, Ban
 } from 'lucide-react';
 import { EditCompanyModal } from './EditCompanyModal';
+import { generateLicenseKeyString } from '../../lib/licensing';
 
 export function SuperAdminPanel() {
   const [customers, setCustomers] = useState<any[]>([]);
   const [activationRequests, setActivationRequests] = useState<any[]>([]);
+  const [licenses, setLicenses] = useState<any[]>([]);
   const [loading, setLoading] = useState(true);
+  const [loadingLicenses, setLoadingLicenses] = useState(false);
   const [refreshing, setRefreshing] = useState(false);
   const [generatingKey, setGeneratingKey] = useState<string | null>(null);
-  const [activeTab, setActiveTab] = useState<'customers' | 'requests'>('customers');
+  const [activeTab, setActiveTab] = useState<'customers' | 'licenses' | 'requests'>('customers');
   const [editingCompany, setEditingCompany] = useState<any>(null);
   const [customerToDelete, setCustomerToDelete] = useState<any | null>(null);
   const [isDeleting, setIsDeleting] = useState(false);
@@ -26,20 +30,117 @@ export function SuperAdminPanel() {
   const [copiedKey, setCopiedKey] = useState<string | null>(null);
   const [copiedEmail, setCopiedEmail] = useState<string | null>(null);
 
+  // States pour la gestion des Licences
+  const [showGenerateModal, setShowGenerateModal] = useState(false);
+  const [genTenantId, setGenTenantId] = useState('');
+  const [genDurationDays, setGenDurationDays] = useState(30);
+  const [genMaxMachines, setGenMaxMachines] = useState(1);
+  const [isGeneratingLicense, setIsGeneratingLicense] = useState(false);
+  const [newlyGeneratedKey, setNewlyGeneratedKey] = useState<string | null>(null);
+  const [licenseSearchQuery, setLicenseSearchQuery] = useState('');
+  const [licenseStatusFilter, setLicenseStatusFilter] = useState<'all' | 'unused' | 'active' | 'expired' | 'revoked'>('all');
+
   useEffect(() => {
     fetchAllData();
   }, []);
 
   const fetchAllData = async () => {
     setLoading(true);
-    await Promise.all([fetchCustomers(), fetchRequests()]);
+    await Promise.all([fetchCustomers(), fetchRequests(), fetchLicenses()]);
     setLoading(false);
   };
 
   const handleRefresh = async () => {
     setRefreshing(true);
-    await Promise.all([fetchCustomers(), fetchRequests()]);
+    await Promise.all([fetchCustomers(), fetchRequests(), fetchLicenses()]);
     setRefreshing(false);
+  };
+
+  const fetchLicenses = async () => {
+    try {
+      setLoadingLicenses(true);
+      const q = query(collection(firestore, 'licenses'));
+      const snapshot = await getDocs(q);
+      const data: any[] = snapshot.docs.map(d => ({ key: d.id, id: d.id, ...d.data() }));
+      data.sort((a, b) => {
+        const dateA = a.createdAt ? new Date(a.createdAt).getTime() : 0;
+        const dateB = b.createdAt ? new Date(b.createdAt).getTime() : 0;
+        return dateB - dateA;
+      });
+      setLicenses(data);
+    } catch (error) {
+      console.warn("Erreur lecture licenses:", error);
+    } finally {
+      setLoadingLicenses(false);
+    }
+  };
+
+  const handleGenerateLicense = async (e: React.FormEvent) => {
+    e.preventDefault();
+    if (!genTenantId.trim()) {
+      setNotification({ type: 'error', message: 'Veuillez spécifier un identifiant entreprise (tenantId).' });
+      return;
+    }
+
+    try {
+      setIsGeneratingLicense(true);
+      const newKey = generateLicenseKeyString();
+      const duration = Number(genDurationDays) || 30;
+      const maxMachines = Number(genMaxMachines) || 1;
+
+      await setDoc(doc(firestore, 'licenses', newKey), {
+        tenantId: genTenantId.trim(),
+        durationDays: duration,
+        maxMachines: maxMachines,
+        status: 'unused',
+        machineId: null,
+        activatedAt: null,
+        expiresAt: null,
+        createdAt: new Date().toISOString(),
+        createdBy: 'SuperAdmin'
+      });
+
+      setNewlyGeneratedKey(newKey);
+      await fetchLicenses();
+      setNotification({
+        type: 'success',
+        message: `Licence ${newKey} générée avec succès pour l'entreprise ${genTenantId.trim()} !`,
+        key: newKey
+      });
+    } catch (err: any) {
+      console.error("Erreur génération licence:", err);
+      setNotification({
+        type: 'error',
+        message: err.message || "Erreur lors de la génération de la licence."
+      });
+    } finally {
+      setIsGeneratingLicense(false);
+    }
+  };
+
+  const handleRevokeLicense = async (licenseKey: string) => {
+    if (!window.confirm(`Confirmez-vous la révocation immédiate de la licence ${licenseKey} ? L'accès sera bloqué sur le poste concerné.`)) {
+      return;
+    }
+
+    try {
+      await updateDoc(doc(firestore, 'licenses', licenseKey), {
+        status: 'revoked',
+        revokedAt: new Date().toISOString(),
+        updatedAt: new Date().toISOString()
+      });
+      await fetchLicenses();
+      setNotification({
+        type: 'info',
+        message: `La licence ${licenseKey} a été révoquée.`
+      });
+    } catch (err: any) {
+      console.error("Erreur révocation licence:", err);
+      setNotification({
+        type: 'error',
+        message: err.message || "Impossible de révoquer la licence."
+      });
+    }
   };
 
   const fetchRequests = async () => {
@@ -529,6 +630,20 @@ export function SuperAdminPanel() {
     return { total: customers.length, active, trial, expired };
   }, [customers]);
 
+  // Filtered licenses for the Licenses tab
+  const filteredLicenses = useMemo(() => {
+    return licenses.filter(lic => {
+      const q = licenseSearchQuery.trim().toLowerCase();
+      const matchSearch = !q || 
+        lic.key?.toLowerCase().includes(q) || 
+        lic.tenantId?.toLowerCase().includes(q) || 
+        lic.machineId?.toLowerCase().includes(q);
+
+      const matchStatus = licenseStatusFilter === 'all' || lic.status === licenseStatusFilter;
+      return matchSearch && matchStatus;
+    });
+  }, [licenses, licenseSearchQuery, licenseStatusFilter]);
+
   return (
     <div className="p-4 sm:p-6 lg:p-8 max-w-7xl mx-auto space-y-6">
       
@@ -660,6 +775,18 @@ export function SuperAdminPanel() {
         >
           <Users className="w-4 h-4" />
           <span>Parc Clients & Inscrits ({customers.length})</span>
+        </button>
+
+        <button
+          onClick={() => setActiveTab('licenses')}
+          className={`px-4 py-2.5 font-semibold text-sm transition-colors border-b-2 cursor-pointer flex items-center gap-2 ${
+            activeTab === 'licenses' 
+              ? 'border-blue-500 text-blue-400' 
+              : 'border-transparent text-slate-400 hover:text-slate-300'
+          }`}
+        >
+          <Key className="w-4 h-4" />
+          <span>Licences ({licenses.length})</span>
         </button>
 
         <button
@@ -973,6 +1100,241 @@ export function SuperAdminPanel() {
         </div>
       )}
 
+      {/* Tab: Licenses Management */}
+      {activeTab === 'licenses' && (
+        <div className="space-y-4">
+          <div className="bg-slate-900 border border-slate-800 rounded-2xl p-5 shadow-xl flex flex-col md:flex-row justify-between items-start md:items-center gap-4">
+            <div>
+              <h2 className="text-base font-bold text-white flex items-center gap-2">
+                <Key className="w-5 h-5 text-blue-400" />
+                <span>Gestion des Licences CARISOFT.next</span>
+              </h2>
+              <p className="text-xs text-slate-400 mt-1">
+                Licences d'essai 30 jours liées à un seul PC physique. Signature cryptographique Ed25519 & vérification hors-ligne.
+              </p>
+            </div>
+
+            <div className="flex items-center gap-3 w-full md:w-auto">
+              <button
+                type="button"
+                onClick={() => {
+                  setNewlyGeneratedKey(null);
+                  setShowGenerateModal(true);
+                }}
+                className="bg-blue-600 hover:bg-blue-500 text-white text-xs font-semibold px-4 py-2.5 rounded-xl transition-colors flex items-center justify-center gap-2 shadow-lg shadow-blue-600/20 cursor-pointer w-full md:w-auto"
+              >
+                <PlusCircle className="w-4 h-4" />
+                <span>Générer une licence</span>
+              </button>
+            </div>
+          </div>
+
+          {/* Search & Filters */}
+          <div className="bg-slate-900/60 border border-slate-800 p-4 rounded-2xl flex flex-col sm:flex-row gap-3 items-center justify-between">
+            <div className="relative w-full sm:w-80">
+              <Search className="w-4 h-4 text-slate-500 absolute left-3.5 top-3" />
+              <input
+                type="text"
+                placeholder="Rechercher par clé, tenantId, machineId..."
+                value={licenseSearchQuery}
+                onChange={(e) => setLicenseSearchQuery(e.target.value)}
+                className="w-full bg-slate-950 border border-slate-800 rounded-xl pl-10 pr-4 py-2 text-xs text-white placeholder-slate-500 focus:outline-none focus:border-blue-500"
+              />
+            </div>
+
+            <div className="flex items-center gap-2 w-full sm:w-auto justify-end">
+              <Filter className="w-3.5 h-3.5 text-slate-400" />
+              <select
+                value={licenseStatusFilter}
+                onChange={(e) => setLicenseStatusFilter(e.target.value as any)}
+                className="bg-slate-950 border border-slate-800 text-slate-300 text-xs rounded-xl px-3 py-2 focus:outline-none focus:border-blue-500 cursor-pointer"
+              >
+                <option value="all">Tous les statuts ({licenses.length})</option>
+                <option value="unused">Non utilisées ({licenses.filter(l => l.status === 'unused').length})</option>
+                <option value="active">Actives ({licenses.filter(l => l.status === 'active').length})</option>
+                <option value="expired">Expirées ({licenses.filter(l => l.status === 'expired').length})</option>
+                <option value="revoked">Révoquées ({licenses.filter(l => l.status === 'revoked').length})</option>
+              </select>
+            </div>
+          </div>
+
+          {/* Licenses Table */}
+          <div className="bg-slate-900 border border-slate-800 rounded-2xl overflow-hidden shadow-xl">
+            <div className="overflow-x-auto">
+              <table className="w-full text-left text-xs sm:text-sm text-slate-300">
+                <thead className="bg-slate-950/80 text-slate-400 uppercase text-[11px] tracking-wider border-b border-slate-800">
+                  <tr>
+                    <th className="px-5 py-3.5 font-semibold">Clé de Licence</th>
+                    <th className="px-5 py-3.5 font-semibold">Entreprise (tenantId)</th>
+                    <th className="px-5 py-3.5 font-semibold">Statut</th>
+                    <th className="px-5 py-3.5 font-semibold">Poste / Machine</th>
+                    <th className="px-5 py-3.5 font-semibold">Durée</th>
+                    <th className="px-5 py-3.5 font-semibold">Dates</th>
+                    <th className="px-5 py-3.5 font-semibold text-right">Actions</th>
+                  </tr>
+                </thead>
+                <tbody className="divide-y divide-slate-800/70">
+                  {loadingLicenses ? (
+                    <tr>
+                      <td colSpan={7} className="px-6 py-12 text-center text-slate-500">
+                        <RefreshCw className="w-6 h-6 animate-spin mx-auto mb-2 text-blue-500" />
+                        Chargement des licences...
+                      </td>
+                    </tr>
+                  ) : filteredLicenses.length === 0 ? (
+                    <tr>
+                      <td colSpan={7} className="px-6 py-12 text-center text-slate-500">
+                        Aucune licence trouvée. Cliquez sur "Générer une licence" pour créer une nouvelle clé.
+                      </td>
+                    </tr>
+                  ) : (
+                    filteredLicenses.map((lic) => {
+                      const isRevoked = lic.status === 'revoked';
+                      const isActive = lic.status === 'active';
+                      const isUnused = lic.status === 'unused' || !lic.status;
+                      const isExpired = lic.status === 'expired';
+
+                      return (
+                        <tr key={lic.key} className="hover:bg-slate-800/30 transition-colors">
+                          <td className="px-5 py-4">
+                            <div className="flex items-center gap-2 font-mono font-bold text-white text-xs sm:text-sm bg-slate-950 px-2.5 py-1.5 rounded-lg border border-slate-800 w-fit">
+                              <span>{lic.key}</span>
+                              <button
+                                type="button"
+                                onClick={() => {
+                                  navigator.clipboard.writeText(lic.key);
+                                  setCopiedKey(lic.key);
+                                  setTimeout(() => setCopiedKey(null), 2000);
+                                }}
+                                title="Copier la clé"
+                                className="text-slate-400 hover:text-white p-1 rounded transition-colors"
+                              >
+                                {copiedKey === lic.key ? (
+                                  <Check className="w-3.5 h-3.5 text-emerald-400" />
+                                ) : (
+                                  <Copy className="w-3.5 h-3.5" />
+                                )}
+                              </button>
+                            </div>
+                          </td>
+
+                          <td className="px-5 py-4">
+                            <div className="font-semibold text-white">{lic.tenantId}</div>
+                            <div className="text-[11px] text-slate-500">
+                              Par {lic.createdBy || 'SuperAdmin'}
+                            </div>
+                          </td>
+
+                          <td className="px-5 py-4">
+                            {isUnused && (
+                              <span className="inline-flex items-center gap-1.5 px-2.5 py-1 rounded-full text-xs font-semibold bg-blue-500/10 text-blue-400 border border-blue-500/30">
+                                <Clock className="w-3 h-3" />
+                                Non utilisée
+                              </span>
+                            )}
+                            {isActive && (
+                              <span className="inline-flex items-center gap-1.5 px-2.5 py-1 rounded-full text-xs font-semibold bg-emerald-500/10 text-emerald-400 border border-emerald-500/30">
+                                <CheckCircle className="w-3 h-3" />
+                                Active
+                              </span>
+                            )}
+                            {isExpired && (
+                              <span className="inline-flex items-center gap-1.5 px-2.5 py-1 rounded-full text-xs font-semibold bg-rose-500/10 text-rose-400 border border-rose-500/30">
+                                <AlertTriangle className="w-3 h-3" />
+                                Expirée
+                              </span>
+                            )}
+                            {isRevoked && (
+                              <span className="inline-flex items-center gap-1.5 px-2.5 py-1 rounded-full text-xs font-semibold bg-amber-500/10 text-amber-400 border border-amber-500/30">
+                                <Ban className="w-3 h-3" />
+                                Révoquée
+                              </span>
+                            )}
+                          </td>
+
+                          <td className="px-5 py-4">
+                            {lic.machineId ? (
+                              <div className="flex items-center gap-1.5 text-xs text-slate-300 font-mono">
+                                <Laptop className="w-3.5 h-3.5 text-blue-400 shrink-0" />
+                                <span title={lic.machineId}>
+                                  {lic.machineId.length > 16 ? `${lic.machineId.substring(0, 14)}...` : lic.machineId}
+                                </span>
+                              </div>
+                            ) : (
+                              <span className="text-xs text-slate-500 italic">Non lié (attente 1re activation)</span>
+                            )}
+                          </td>
+
+                          <td className="px-5 py-4">
+                            <span className="font-medium text-white">{lic.durationDays || 30} jours</span>
+                            <span className="text-[11px] text-slate-500 block">{lic.maxMachines || 1} PC max</span>
+                          </td>
+
+                          <td className="px-5 py-4 text-xs space-y-0.5">
+                            <div className="text-slate-400">
+                              Créée : {lic.createdAt ? new Date(lic.createdAt).toLocaleDateString('fr-FR') : '-'}
+                            </div>
+                            {lic.activatedAt && (
+                              <div className="text-emerald-400 font-medium">
+                                Activée : {new Date(lic.activatedAt).toLocaleDateString('fr-FR')}
+                              </div>
+                            )}
+                            {lic.expiresAt && (
+                              <div className="text-amber-400 font-medium">
+                                Expire : {new Date(lic.expiresAt).toLocaleDateString('fr-FR')}
+                              </div>
+                            )}
+                          </td>
+
+                          <td className="px-5 py-4 text-right">
+                            <div className="flex items-center justify-end gap-2">
+                              <button
+                                type="button"
+                                onClick={() => {
+                                  navigator.clipboard.writeText(lic.key);
+                                  setCopiedKey(lic.key);
+                                  setTimeout(() => setCopiedKey(null), 2000);
+                                }}
+                                className="px-2.5 py-1.5 text-xs font-medium text-slate-300 hover:text-white bg-slate-800 hover:bg-slate-700 rounded-lg transition-colors flex items-center gap-1 border border-slate-700"
+                                title="Copier la clé"
+                              >
+                                {copiedKey === lic.key ? (
+                                  <>
+                                    <Check className="w-3 h-3 text-emerald-400" />
+                                    <span>Copiée</span>
+                                  </>
+                                ) : (
+                                  <>
+                                    <Copy className="w-3 h-3" />
+                                    <span>Copier</span>
+                                  </>
+                                )}
+                              </button>
+
+                              {!isRevoked && (
+                                <button
+                                  type="button"
+                                  onClick={() => handleRevokeLicense(lic.key)}
+                                  className="px-2.5 py-1.5 text-xs font-medium text-rose-400 hover:text-white bg-rose-500/10 hover:bg-rose-600 rounded-lg transition-colors flex items-center gap-1 border border-rose-500/20"
+                                  title="Révoquer la licence"
+                                >
+                                  <Ban className="w-3 h-3" />
+                                  <span>Révoquer</span>
+                                </button>
+                              )}
+                            </div>
+                          </td>
+                        </tr>
+                      );
+                    })
+                  )}
+                </tbody>
+              </table>
+            </div>
+          </div>
+        </div>
+      )}
+
       {/* Tab 2: Activation Requests */}
       {activeTab === 'requests' && (
         <div className="bg-slate-900 border border-slate-800 rounded-2xl overflow-hidden shadow-xl">
@@ -1135,6 +1497,168 @@ export function SuperAdminPanel() {
                 )}
               </button>
             </div>
+          </div>
+        </div>
+      )}
+
+      {/* Modal: Générer une licence */}
+      {showGenerateModal && (
+        <div className="fixed inset-0 bg-slate-950/80 backdrop-blur-sm z-[150] flex items-center justify-center p-4">
+          <div className="max-w-md w-full bg-slate-900 border border-slate-800 rounded-2xl p-6 shadow-2xl relative">
+            <button
+              onClick={() => {
+                setShowGenerateModal(false);
+                setNewlyGeneratedKey(null);
+              }}
+              className="absolute top-4 right-4 text-slate-400 hover:text-white"
+            >
+              <X className="w-5 h-5" />
+            </button>
+
+            <div className="flex items-center gap-3 mb-6">
+              <div className="w-10 h-10 rounded-full bg-blue-500/20 flex items-center justify-center text-blue-400">
+                <Key className="w-5 h-5" />
+              </div>
+              <div>
+                <h3 className="text-base font-bold text-white">Générer une licence</h3>
+                <p className="text-xs text-slate-400">Liée à un seul PC physique (30 jours après activation)</p>
+              </div>
+            </div>
+
+            {newlyGeneratedKey ? (
+              <div className="space-y-4">
+                <div className="bg-emerald-500/10 border border-emerald-500/40 rounded-xl p-4 text-center">
+                  <CheckCircle className="w-8 h-8 text-emerald-400 mx-auto mb-2" />
+                  <p className="text-xs text-emerald-400 font-semibold mb-2">Clé générée avec succès</p>
+                  <div className="bg-slate-950 p-3 rounded-lg border border-slate-800 font-mono font-bold text-white text-base tracking-wider flex items-center justify-between">
+                    <span>{newlyGeneratedKey}</span>
+                    <button
+                      type="button"
+                      onClick={() => {
+                        navigator.clipboard.writeText(newlyGeneratedKey);
+                        setCopiedKey(newlyGeneratedKey);
+                        setTimeout(() => setCopiedKey(null), 2000);
+                      }}
+                      className="p-1.5 hover:bg-slate-800 rounded text-slate-400 hover:text-white"
+                      title="Copier la clé"
+                    >
+                      {copiedKey === newlyGeneratedKey ? (
+                        <Check className="w-4 h-4 text-emerald-400" />
+                      ) : (
+                        <Copy className="w-4 h-4" />
+                      )}
+                    </button>
+                  </div>
+                </div>
+
+                <div className="text-xs text-slate-400 space-y-1">
+                  <p>• Entreprise / Tenant : <strong className="text-white">{genTenantId}</strong></p>
+                  <p>• Durée de validité : <strong className="text-white">{genDurationDays} jours</strong></p>
+                  <p>• Nb de postes max : <strong className="text-white">{genMaxMachines} PC</strong></p>
+                  <p className="text-[11px] text-slate-500 italic mt-2">
+                    L'horloge et le décompte des 30 jours débuteront dès la première activation sur le PC du client.
+                  </p>
+                </div>
+
+                <div className="pt-2">
+                  <button
+                    type="button"
+                    onClick={() => {
+                      setShowGenerateModal(false);
+                      setNewlyGeneratedKey(null);
+                    }}
+                    className="w-full bg-blue-600 hover:bg-blue-500 text-white font-semibold py-2.5 rounded-xl text-xs transition-colors"
+                  >
+                    Fermer
+                  </button>
+                </div>
+              </div>
+            ) : (
+              <form onSubmit={handleGenerateLicense} className="space-y-4">
+                <div>
+                  <label className="block text-xs font-semibold text-slate-300 mb-1">
+                    Entreprise / TenantId <span className="text-rose-400">*</span>
+                  </label>
+                  <input
+                    type="text"
+                    required
+                    placeholder="ex: COMP-001 ou ID entreprise"
+                    value={genTenantId}
+                    onChange={(e) => setGenTenantId(e.target.value)}
+                    list="companies-list"
+                    className="w-full bg-slate-950 border border-slate-800 rounded-xl px-3.5 py-2.5 text-xs text-white focus:outline-none focus:border-blue-500"
+                  />
+                  <datalist id="companies-list">
+                    {customers.map((c) => (
+                      <option key={c.uid || c.id} value={c.uid || c.id}>
+                        {c.name} ({c.email || c.ownerEmail})
+                      </option>
+                    ))}
+                  </datalist>
+                  <p className="text-[11px] text-slate-500 mt-1">Sélectionnez une entreprise cliente ou tapez son identifiant.</p>
+                </div>
+
+                <div className="grid grid-cols-2 gap-3">
+                  <div>
+                    <label className="block text-xs font-semibold text-slate-300 mb-1">
+                      Durée en jours
+                    </label>
+                    <input
+                      type="number"
+                      min={1}
+                      max={3650}
+                      required
+                      value={genDurationDays}
+                      onChange={(e) => setGenDurationDays(Number(e.target.value))}
+                      className="w-full bg-slate-950 border border-slate-800 rounded-xl px-3.5 py-2.5 text-xs text-white focus:outline-none focus:border-blue-500"
+                    />
+                    <p className="text-[11px] text-slate-500 mt-1">Défaut: 30 jours</p>
+                  </div>
+
+                  <div>
+                    <label className="block text-xs font-semibold text-slate-300 mb-1">
+                      Nb de PC max
+                    </label>
+                    <input
+                      type="number"
+                      min={1}
+                      max={1}
+                      readOnly
+                      value={genMaxMachines}
+                      className="w-full bg-slate-950/60 border border-slate-800 text-slate-400 rounded-xl px-3.5 py-2.5 text-xs cursor-not-allowed"
+                    />
+                    <p className="text-[11px] text-slate-500 mt-1">Défaut: 1 PC</p>
+                  </div>
+                </div>
+
+                <div className="pt-3 flex justify-end gap-3">
+                  <button
+                    type="button"
+                    onClick={() => setShowGenerateModal(false)}
+                    className="px-4 py-2 text-xs font-semibold text-slate-400 hover:text-white bg-slate-800 rounded-xl transition-colors cursor-pointer"
+                  >
+                    Annuler
+                  </button>
+                  <button
+                    type="submit"
+                    disabled={isGeneratingLicense || !genTenantId.trim()}
+                    className="px-5 py-2 text-xs font-semibold text-white bg-blue-600 hover:bg-blue-500 rounded-xl transition-colors disabled:opacity-50 flex items-center gap-1.5 shadow-lg shadow-blue-600/20 cursor-pointer"
+                  >
+                    {isGeneratingLicense ? (
+                      <>
+                        <RefreshCw className="w-3.5 h-3.5 animate-spin" />
+                        <span>Génération...</span>
+                      </>
+                    ) : (
+                      <>
+                        <Key className="w-3.5 h-3.5" />
+                        <span>Créer la clé</span>
+                      </>
+                    )}
+                  </button>
+                </div>
+              </form>
+            )}
           </div>
         </div>
       )}

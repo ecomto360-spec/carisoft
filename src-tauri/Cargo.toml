@@ -1,25 +1,32 @@
 [package]
-name = "app"
+name = "carisoft-next"
 version = "0.1.0"
-description = "A Tauri App"
-authors = ["you"]
+description = "CARISOFT.next - Système de gestion de carrières et centrales à béton"
+authors = ["CARISOFT"]
 license = ""
 repository = ""
 edition = "2021"
-rust-version = "1.77.2"
-
-# See more keys and their definitions at https://doc.rust-lang.org/cargo/reference/manifest.html
-
-[lib]
-name = "app_lib"
-crate-type = ["staticlib", "cdylib", "rlib"]
 
 [build-dependencies]
-tauri-build = { version = "2.6.3", features = [] }
+tauri-build = { version = "1.5", features = [] }
 
 [dependencies]
-serde_json = "1.0"
+tauri = { version = "1.5", features = ["dialog-all", "fs-all", "http-all", "path-all", "shell-open"] }
 serde = { version = "1.0", features = ["derive"] }
+serde_json = "1.0"
+machine-uid = "0.3.0"
+sha2 = "0.10.8"
+hex = "0.4.3"
 log = "0.4"
-tauri = { version = "2.11.3", features = [] }
-tauri-plugin-log = "2"
+
+# --- NOUVELLES DÉPENDANCES POUR LE SYSTÈME DE LICENCE SÉCURISÉ ---
+reqwest = { version = "0.11", default-features = false, features = ["json", "rustls-tls"] }
+ed25519-dalek = { version = "2.0", features = ["pem"] }
+base64 = "0.22"
+chrono = { version = "0.4", features = ["serde"] }
+tokio = { version = "1", features = ["full"] }
+# -----------------------------------------------------------------
+
+[features]
+default = ["custom-protocol"]
+custom-protocol = ["tauri/custom-protocol"]

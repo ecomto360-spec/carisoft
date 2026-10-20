@@ -137,16 +137,22 @@ export function ReportsDashboard() {
 
       {/* Navigation Tabs */}
       <div className="flex flex-wrap items-center gap-1 border-b border-slate-200 pb-0">
-        <button className="px-5 py-3 text-sm font-bold text-blue-600 border-b-2 border-blue-600 flex items-center gap-2">
+        <button className="px-5 py-3 text-sm font-bold text-blue-600 border-b-2 border-blue-600 flex items-center gap-2 cursor-pointer">
           <BarChart3 className="h-4 w-4" /> Tableau de Bord
         </button>
-        <button onClick={() => navigate('/reports/truck-deliveries')} className="px-5 py-3 text-sm font-bold text-slate-500 hover:text-slate-800 hover:bg-slate-50 transition-colors flex items-center gap-2 rounded-t-lg">
+        <button onClick={() => navigate('/reports/etat-104')} className="px-5 py-3 text-sm font-bold text-slate-500 hover:text-slate-800 hover:bg-slate-50 transition-colors flex items-center gap-2 rounded-t-lg cursor-pointer">
+          <FileText className="h-4 w-4 text-blue-600" /> État 104 (Fiscal & Impôts)
+        </button>
+        <button onClick={() => navigate('/reports/truck-deliveries')} className="px-5 py-3 text-sm font-bold text-slate-500 hover:text-slate-800 hover:bg-slate-50 transition-colors flex items-center gap-2 rounded-t-lg cursor-pointer">
           <Users className="h-4 w-4" /> Enlèvements / Client
         </button>
-        <button onClick={() => navigate('/reports/truck-only-deliveries')} className="px-5 py-3 text-sm font-bold text-slate-500 hover:text-slate-800 hover:bg-slate-50 transition-colors flex items-center gap-2 rounded-t-lg">
+        <button onClick={() => navigate('/reports/truck-only-deliveries')} className="px-5 py-3 text-sm font-bold text-slate-500 hover:text-slate-800 hover:bg-slate-50 transition-colors flex items-center gap-2 rounded-t-lg cursor-pointer">
           <Truck className="h-4 w-4" /> Enlèvements / Camion
         </button>
-        <button onClick={() => navigate('/reports/periodic-deliveries')} className="px-5 py-3 text-sm font-bold text-slate-500 hover:text-slate-800 hover:bg-slate-50 transition-colors flex items-center gap-2 rounded-t-lg">
+        <button onClick={() => navigate('/reports/product-deliveries')} className="px-5 py-3 text-sm font-bold text-slate-500 hover:text-slate-800 hover:bg-slate-50 transition-colors flex items-center gap-2 rounded-t-lg cursor-pointer">
+          <Package className="h-4 w-4" /> Enlèvements / Produit
+        </button>
+        <button onClick={() => navigate('/reports/periodic-deliveries')} className="px-5 py-3 text-sm font-bold text-slate-500 hover:text-slate-800 hover:bg-slate-50 transition-colors flex items-center gap-2 rounded-t-lg cursor-pointer">
           <FileText className="h-4 w-4" /> Rapport Périodique
         </button>
       </div>
@@ -294,6 +300,30 @@ export function ReportsDashboard() {
           <h3 className="text-sm font-black text-slate-800 uppercase tracking-wider mb-2 ml-1">
             Génération de Rapports
           </h3>
+
+          {/* Card 0: État 104 */}
+          <div className="bg-gradient-to-br from-blue-900 to-slate-900 text-white p-5 rounded-2xl border border-blue-800 shadow-md flex flex-col h-auto">
+            <div className="flex items-start justify-between gap-3 mb-3">
+              <div className="p-2.5 bg-blue-500/20 rounded-xl text-blue-400 border border-blue-400/30">
+                <FileText className="h-6 w-6" />
+              </div>
+              <span className="px-2 py-0.5 text-[10px] font-black uppercase tracking-wider bg-blue-500 text-white rounded-md">
+                Officiel DGI
+              </span>
+            </div>
+            <div>
+              <h4 className="text-base font-black text-white leading-tight">État 104 — Chiffre d'Affaires</h4>
+              <p className="text-xs text-slate-300 font-normal mt-1 leading-relaxed">
+                Relevé fiscal officiel nominatif des clients (Art. 224 CIDTA) avec NIF, NIS, RC, montants HT et TVA pour la déclaration d'impôts du comptable.
+              </p>
+            </div>
+            <button
+              onClick={() => navigate('/reports/etat-104')}
+              className="mt-4 w-full py-2.5 bg-blue-600 hover:bg-blue-500 text-white text-xs font-bold rounded-xl shadow-xs transition-colors flex items-center justify-center gap-2 cursor-pointer"
+            >
+              <Plus className="h-4 w-4" /> Générer l'État 104
+            </button>
+          </div>
 
           {/* Card 1 */}
           <div className="bg-white p-5 rounded-2xl border border-slate-200 shadow-sm hover:shadow-md hover:border-blue-300 transition-all group flex flex-col h-full">

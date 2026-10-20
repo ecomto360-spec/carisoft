@@ -1,6 +1,7 @@
 import { useState, useMemo } from 'react';
 import { Truck, Driver } from '../../types';
 import { Search, X, Check, Truck as TruckIcon, Phone, Star } from 'lucide-react';
+import { useDebounce } from '../../hooks/useDebounce';
 
 interface TruckPickerModalProps {
   isOpen: boolean;
@@ -9,6 +10,9 @@ interface TruckPickerModalProps {
   trucks: Truck[];
   drivers: Driver[];
   selectedTruckId?: string;
+  customerName?: string;
+  customerFavoriteTruckIds?: string[];
+  onToggleCustomerFavorite?: (truckId: string) => void;
   companyName?: string;
 }
 
@@ -19,9 +23,13 @@ export function TruckPickerModal({
   trucks,
   drivers,
   selectedTruckId,
+  customerName,
+  customerFavoriteTruckIds = [],
+  onToggleCustomerFavorite,
   companyName = 'SARL MAHAJIR SIDAR - CARRIERE D\'AGREGATS'
 }: TruckPickerModalProps) {
   const [search, setSearch] = useState('');
+  const debouncedSearch = useDebounce(search, 200);
   const [highlightedId, setHighlightedId] = useState<string>(selectedTruckId || (trucks[0]?.id || ''));
 
   const driverMap = useMemo(() => {
@@ -30,9 +38,12 @@ export function TruckPickerModal({
     return map;
   }, [drivers]);
 
+  const custFavSet = useMemo(() => new Set(customerFavoriteTruckIds), [customerFavoriteTruckIds]);
+
   const filteredTrucks = useMemo(() => {
-    return trucks.filter(t => {
-      const q = search.toLowerCase().trim();
+    const q = debouncedSearch.toLowerCase().trim();
+    const list = trucks.filter(t => {
+      if (t.active === false) return false;
       if (!q) return true;
       const driverInfo = t.driverId ? driverMap.get(t.driverId) : undefined;
       const driverName = t.driverName || driverInfo?.name || '';
@@ -43,7 +54,23 @@ export function TruckPickerModal({
         driverPhone.includes(q)
       );
     });
-  }, [trucks, search, driverMap]);
+
+    // Sort: Customer favorites first, then global favorites, then by matricule
+    return list.sort((a, b) => {
+      const aCustFav = custFavSet.has(a.id) ? 1 : 0;
+      const bCustFav = custFavSet.has(b.id) ? 1 : 0;
+      if (aCustFav !== bCustFav) return bCustFav - aCustFav;
+
+      if (a.isFavorite && !b.isFavorite) return -1;
+      if (!a.isFavorite && b.isFavorite) return 1;
+
+      return a.matricule.localeCompare(b.matricule);
+    });
+  }, [trucks, debouncedSearch, driverMap, custFavSet]);
+
+  const displayedTrucks = useMemo(() => {
+    return filteredTrucks.slice(0, 30);
+  }, [filteredTrucks]);
 
   if (!isOpen) return null;
 
@@ -62,7 +89,7 @@ export function TruckPickerModal({
       <div className="bg-white w-full max-w-3xl rounded-xl shadow-2xl border border-slate-300 overflow-hidden flex flex-col max-h-[90vh]">
         
         {/* Window Title Bar */}
-        <div className="bg-linear-to-r from-blue-700 via-blue-800 to-indigo-900 text-white px-4 py-2.5 flex items-center justify-between shadow-sm select-none">
+        <div className="bg-gradient-to-r from-blue-700 via-blue-800 to-indigo-900 text-white px-4 py-2.5 flex items-center justify-between shadow-sm select-none">
           <div className="flex items-center gap-2">
             <TruckIcon className="h-4 w-4 text-blue-200" />
             <span className="font-semibold text-xs sm:text-sm tracking-tight truncate">
@@ -101,9 +128,15 @@ export function TruckPickerModal({
           )}
         </div>
 
-        {/* Blue Table Header Title */}
-        <div className="bg-blue-600 text-white text-center py-1 text-xs font-bold uppercase tracking-wider">
-          Liste des Camions
+        {/* Header Title with customer notice if applicable */}
+        <div className="bg-blue-600 text-white px-3 py-1 text-xs font-bold uppercase tracking-wider flex items-center justify-between">
+          <span>Liste des Camions</span>
+          {customerName && (
+            <span className="text-[11px] font-normal normal-case text-amber-200 flex items-center gap-1">
+              <Star className="h-3 w-3 fill-amber-300 text-amber-300" />
+              Camions habituels de <strong>{customerName}</strong> en haut
+            </span>
+          )}
         </div>
 
         {/* Data Table */}
@@ -111,8 +144,8 @@ export function TruckPickerModal({
           <table className="w-full text-left text-xs border-collapse">
             <thead className="bg-slate-800 text-white sticky top-0 z-10 select-none">
               <tr>
-                <th className="py-2 px-2.5 font-semibold border-r border-slate-700 w-12 text-center">Photo</th>
-                <th className="py-2 px-3 font-semibold border-r border-slate-700 w-32">Matricule</th>
+                <th className="py-2 px-2.5 font-semibold border-r border-slate-700 w-12 text-center">Favori</th>
+                <th className="py-2 px-3 font-semibold border-r border-slate-700 w-36">Matricule</th>
                 <th className="py-2 px-3 font-semibold border-r border-slate-700">Chauffeur & Téléphone</th>
                 <th className="py-2 px-3 font-semibold text-right border-r border-slate-700 w-24">Tare (T)</th>
                 <th className="py-2 px-3 font-semibold text-right border-r border-slate-700 w-24">Mn Tonne</th>
@@ -120,15 +153,17 @@ export function TruckPickerModal({
               </tr>
             </thead>
             <tbody className="divide-y divide-slate-200 bg-white">
-              {filteredTrucks.length === 0 ? (
+              {displayedTrucks.length === 0 ? (
                 <tr>
                   <td colSpan={6} className="py-8 text-center text-slate-400 italic">
                     Aucun camion trouvé pour &quot;{search}&quot;
                   </td>
                 </tr>
               ) : (
-                filteredTrucks.map((truck) => {
+                displayedTrucks.map((truck) => {
                   const isSelected = truck.id === highlightedId;
+                  const isCustFav = custFavSet.has(truck.id);
+                  const isFav = isCustFav || truck.isFavorite;
                   const driverInfo = truck.driverId ? driverMap.get(truck.driverId) : undefined;
                   const driverName = truck.driverName || driverInfo?.name || '-';
                   const driverPhone = truck.driverPhone || driverInfo?.phone;
@@ -147,27 +182,36 @@ export function TruckPickerModal({
                           : 'hover:bg-blue-50/70 text-slate-700'
                       }`}
                     >
-                      {/* Photo Thumbnail */}
-                      <td className="py-1 px-2 border-r border-slate-200 text-center">
-                        <div className="w-9 h-7 rounded bg-slate-900 overflow-hidden flex items-center justify-center mx-auto border border-slate-300">
-                          {truck.imageUrl ? (
-                            <img src={truck.imageUrl} alt="" className="w-full h-full object-cover" />
-                          ) : (
-                            <TruckIcon className="h-3.5 w-3.5 text-amber-400" />
-                          )}
-                        </div>
+                      {/* Star column */}
+                      <td className="py-1 px-2 border-r border-slate-200 text-center" onClick={(e) => e.stopPropagation()}>
+                        <button
+                          type="button"
+                          onClick={() => onToggleCustomerFavorite && onToggleCustomerFavorite(truck.id)}
+                          className="p-1 hover:scale-110 transition-transform cursor-pointer rounded"
+                          title={isFav ? "Camion favori" : "Ajouter aux favoris de ce client"}
+                        >
+                          <Star className={`h-4 w-4 ${
+                            isFav 
+                              ? 'text-amber-500 fill-amber-500' 
+                              : 'text-slate-300 hover:text-amber-400'
+                          }`} />
+                        </button>
                       </td>
 
                       {/* Matricule */}
                       <td className="py-2 px-3 border-r border-slate-200 font-mono font-bold tracking-wider text-slate-950">
                         <div className="flex items-center gap-1.5">
                           <span>{truck.matricule}</span>
-                          {truck.isFavorite && (
-                            <span className="inline-flex items-center gap-1 text-[10px] bg-amber-100 text-amber-900 border border-amber-300 font-sans font-bold px-1.5 py-0.5 rounded shadow-2xs">
-                              <Star className="h-2.5 w-2.5 fill-amber-500 text-amber-500" />
+                          {isCustFav ? (
+                            <span className="inline-flex items-center gap-0.5 text-[9px] bg-amber-100 text-amber-900 border border-amber-300 font-sans font-black px-1.5 py-0.2 rounded shadow-2xs">
+                              <Star className="h-2 w-2 fill-amber-500 text-amber-500" />
+                              Habituel
+                            </span>
+                          ) : truck.isFavorite ? (
+                            <span className="inline-flex items-center gap-0.5 text-[9px] bg-blue-100 text-blue-900 border border-blue-300 font-sans font-bold px-1.5 py-0.2 rounded">
                               Favori
                             </span>
-                          )}
+                          ) : null}
                         </div>
                       </td>
 
@@ -183,16 +227,16 @@ export function TruckPickerModal({
                       </td>
 
                       {/* Tare */}
-                      <td className="py-2 px-3 text-right font-mono font-black text-blue-900 border-r border-slate-200">
+                      <td className="py-2 px-3 text-right border-r border-slate-200 font-mono font-black text-blue-900">
                         {truck.tare.toFixed(2).replace('.', ',')} T
                       </td>
 
-                      {/* Mn tonne */}
-                      <td className="py-2 px-3 text-right font-mono text-slate-700 border-r border-slate-200">
-                        {truck.mnTonne !== undefined ? Number(truck.mnTonne).toFixed(2).replace('.', ',') : '0,00'}
+                      {/* Mn Tonne */}
+                      <td className="py-2 px-3 text-right border-r border-slate-200 font-mono text-slate-700">
+                        {truck.mnTonne ? truck.mnTonne.toFixed(2).replace('.', ',') : '-'}
                       </td>
 
-                      {/* Volume m3 */}
+                      {/* Volume */}
                       <td className="py-2 px-3 text-right font-mono font-semibold text-amber-900">
                         {truck.volumeM3 ? `${truck.volumeM3} m³` : '-'}
                       </td>
@@ -207,7 +251,7 @@ export function TruckPickerModal({
         {/* Modal Actions Footer */}
         <div className="p-3 bg-slate-100 border-t border-slate-200 flex items-center justify-between">
           <span className="text-xs text-slate-500">
-            {filteredTrucks.length} camion(s) - Double-cliquez pour sélectionner
+            Double-cliquez pour sélectionner et charger la tare automatiquement
           </span>
           <div className="flex items-center gap-2">
             <button
@@ -215,7 +259,7 @@ export function TruckPickerModal({
               onClick={onClose}
               className="px-4 py-1.5 text-xs font-semibold text-slate-700 bg-white border border-slate-300 rounded-lg hover:bg-slate-50 cursor-pointer shadow-xs"
             >
-              J&apos;annule
+              Quitter
             </button>
             <button
               type="button"

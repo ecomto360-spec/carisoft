@@ -11,7 +11,7 @@ import { useAuthStore } from '../../store/authStore';
 import { 
   Truck as TruckIcon, Printer, Search, Calendar, 
   ArrowLeft, FileText, CheckCircle2, 
-  AlertCircle, Users, Box, X
+  AlertCircle, Users, Box, X, BarChart3, Package
 } from 'lucide-react';
 
 type PresetPeriod = 
@@ -334,6 +334,45 @@ export function TruckOnlyDeliveriesReport() {
             </p>
           </div>
         </div>
+      </div>
+
+      {/* Navigation Tabs */}
+      <div className="flex flex-wrap items-center gap-1 border-b border-slate-200 pb-0">
+        <button
+          onClick={() => navigate('/reports')}
+          className="px-5 py-3 text-sm font-bold text-slate-500 hover:text-slate-800 hover:bg-slate-50 transition-colors flex items-center gap-2 rounded-t-lg cursor-pointer"
+        >
+          <BarChart3 className="h-4 w-4" /> Tableau de Bord
+        </button>
+        <button
+          onClick={() => navigate('/reports/etat-104')}
+          className="px-5 py-3 text-sm font-bold text-slate-500 hover:text-slate-800 hover:bg-slate-50 transition-colors flex items-center gap-2 rounded-t-lg cursor-pointer"
+        >
+          <FileText className="h-4 w-4 text-blue-600" /> État 104 (Fiscal & Impôts)
+        </button>
+        <button
+          onClick={() => navigate('/reports/truck-deliveries')}
+          className="px-5 py-3 text-sm font-bold text-slate-500 hover:text-slate-800 hover:bg-slate-50 transition-colors flex items-center gap-2 rounded-t-lg cursor-pointer"
+        >
+          <Users className="h-4 w-4" /> Enlèvements / Client
+        </button>
+        <button
+          className="px-5 py-3 text-sm font-bold text-blue-600 border-b-2 border-blue-600 flex items-center gap-2 bg-blue-50/40 rounded-t-lg cursor-pointer"
+        >
+          <TruckIcon className="h-4 w-4" /> Enlèvements / Camion
+        </button>
+        <button
+          onClick={() => navigate('/reports/product-deliveries')}
+          className="px-5 py-3 text-sm font-bold text-slate-500 hover:text-slate-800 hover:bg-slate-50 transition-colors flex items-center gap-2 rounded-t-lg cursor-pointer"
+        >
+          <Package className="h-4 w-4" /> Enlèvements / Produit
+        </button>
+        <button
+          onClick={() => navigate('/reports/periodic-deliveries')}
+          className="px-5 py-3 text-sm font-bold text-slate-500 hover:text-slate-800 hover:bg-slate-50 transition-colors flex items-center gap-2 rounded-t-lg cursor-pointer"
+        >
+          <FileText className="h-4 w-4" /> Rapport Périodique
+        </button>
       </div>
 
       {/* Main Filter Section */}

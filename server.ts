@@ -81,10 +81,36 @@ async function startServer() {
     }
   });
 
+  // API Route: Activate License (Serverless & Express integration)
+  app.post("/api/activate-license", async (req, res) => {
+    try {
+      const activateHandler = (await import("./api/activate-license.js")).default || (await import("./api/activate-license.ts")).default;
+      await activateHandler(req, res);
+    } catch (err: any) {
+      console.error("Error invoking activate-license handler:", err);
+      res.status(500).json({ error: err.message || "Erreur activation licence" });
+    }
+  });
+
+  // API Route: Check License (Revocation check)
+  app.post("/api/check-license", async (req, res) => {
+    try {
+      const checkHandler = (await import("./api/check-license.js")).default || (await import("./api/check-license.ts")).default;
+      await checkHandler(req, res);
+    } catch (err: any) {
+      console.error("Error invoking check-license handler:", err);
+      res.status(500).json({ error: err.message || "Erreur vérification licence" });
+    }
+  });
+
   // Vite middleware for development
   if (process.env.NODE_ENV !== "production") {
     const vite = await createViteServer({
-      server: { middlewareMode: true },
+      server: { 
+        middlewareMode: true,
+        allowedHosts: true,
+        hmr: false
+      },
       appType: "spa",
     });
     app.use(vite.middlewares);

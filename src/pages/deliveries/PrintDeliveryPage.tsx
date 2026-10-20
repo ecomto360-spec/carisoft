@@ -1,18 +1,32 @@
 import { useEffect, useState } from 'react';
 import { useParams, useNavigate, useSearchParams } from 'react-router-dom';
 import { db } from '../../db/db';
-import { generateBLHtml, type DeliveryPrintData } from '../../lib/printReceipt';
-import { Printer, ArrowLeft, Download, FileText } from 'lucide-react';
+import { 
+  generateBLHtml, 
+  getStoredPrintFormat, 
+  setStoredPrintFormat, 
+  type DeliveryPrintData, 
+  type DeliveryPrintFormat 
+} from '../../lib/printReceipt';
+import { Printer, ArrowLeft, Download, Tag, Copy, Receipt, FileText, Check } from 'lucide-react';
 import { Button } from '../../components/ui/Button';
 
 export function PrintDeliveryPage() {
   const { id } = useParams();
   const navigate = useNavigate();
   const [searchParams, setSearchParams] = useSearchParams();
-  const format = (searchParams.get('format') as 'A4' | 'ticket') || 'A4';
+  
+  const initialFormat = (searchParams.get('format') as DeliveryPrintFormat) || getStoredPrintFormat();
+  const [format, setFormat] = useState<DeliveryPrintFormat>(initialFormat);
 
   const [printData, setPrintData] = useState<DeliveryPrintData | null>(null);
   const [loading, setLoading] = useState(true);
+
+  const handleFormatChange = (newFormat: DeliveryPrintFormat) => {
+    setFormat(newFormat);
+    setStoredPrintFormat(newFormat);
+    setSearchParams({ format: newFormat });
+  };
 
   useEffect(() => {
     if (!id) return;
@@ -133,20 +147,48 @@ export function PrintDeliveryPage() {
           <span className="font-bold text-sm font-mono">{printData.number}</span>
         </div>
 
-        <div className="flex items-center gap-2">
+        <div className="flex flex-wrap items-center gap-2">
           {/* Format selector */}
-          <div className="flex bg-slate-800 p-0.5 rounded-lg text-xs">
+          <div className="flex bg-slate-800 p-0.5 rounded-lg text-xs gap-1">
             <button
-              onClick={() => setSearchParams({ format: 'A4' })}
-              className={`px-3 py-1 rounded-md font-semibold ${format === 'A4' ? 'bg-blue-600 text-white' : 'text-slate-300'}`}
+              onClick={() => handleFormatChange('landscape2')}
+              title="A4 Paysage - 2 Copies sur 1 page (Économie de 50% de papier)"
+              className={`flex items-center gap-1.5 px-3 py-1.5 rounded-md font-semibold cursor-pointer transition-all ${
+                format === 'landscape2' ? 'bg-emerald-600 text-white shadow-sm' : 'text-slate-300 hover:text-white'
+              }`}
             >
-              Format A4
+              <Copy className="h-3.5 w-3.5" />
+              <span>A4 Paysage (2 Copies Éco)</span>
             </button>
             <button
-              onClick={() => setSearchParams({ format: 'ticket' })}
-              className={`px-3 py-1 rounded-md font-semibold ${format === 'ticket' ? 'bg-blue-600 text-white' : 'text-slate-300'}`}
+              onClick={() => handleFormatChange('label')}
+              title="Format Étiquette / Sticker autocollant petite taille (58mm)"
+              className={`flex items-center gap-1.5 px-2.5 py-1.5 rounded-md font-semibold cursor-pointer transition-all ${
+                format === 'label' ? 'bg-blue-600 text-white shadow-sm' : 'text-slate-300 hover:text-white'
+              }`}
             >
-              Ticket 80mm
+              <Tag className="h-3.5 w-3.5" />
+              <span>Étiquette</span>
+            </button>
+            <button
+              onClick={() => handleFormatChange('ticket')}
+              title="Ticket thermique 80mm de caisse"
+              className={`flex items-center gap-1.5 px-2.5 py-1.5 rounded-md font-semibold cursor-pointer transition-all ${
+                format === 'ticket' ? 'bg-blue-600 text-white shadow-sm' : 'text-slate-300 hover:text-white'
+              }`}
+            >
+              <Receipt className="h-3.5 w-3.5" />
+              <span>Ticket 80mm</span>
+            </button>
+            <button
+              onClick={() => handleFormatChange('A4')}
+              title="Format A4 Portrait standard (1 seule copie pleine page)"
+              className={`flex items-center gap-1.5 px-2.5 py-1.5 rounded-md font-semibold cursor-pointer transition-all ${
+                format === 'A4' ? 'bg-blue-600 text-white shadow-sm' : 'text-slate-300 hover:text-white'
+              }`}
+            >
+              <FileText className="h-3.5 w-3.5" />
+              <span>A4 1-Page</span>
             </button>
           </div>
 
@@ -155,7 +197,7 @@ export function PrintDeliveryPage() {
             Exporter HTML
           </Button>
 
-          <Button size="sm" onClick={() => window.print()} className="bg-blue-600 hover:bg-blue-500 text-white font-bold">
+          <Button size="sm" onClick={() => window.print()} className="bg-emerald-600 hover:bg-emerald-500 text-white font-bold">
             <Printer className="h-4 w-4 mr-1.5" />
             Imprimer
           </Button>
@@ -165,7 +207,15 @@ export function PrintDeliveryPage() {
       {/* Render the printable HTML content */}
       <div className="p-4 sm:p-8 flex justify-center">
         <div 
-          className="bg-white shadow-xl rounded-xl overflow-hidden max-w-3xl w-full p-8"
+          className={`bg-white shadow-xl rounded-xl overflow-hidden w-full ${
+            format === 'label' 
+              ? 'max-w-xs p-4' 
+              : format === 'ticket' 
+              ? 'max-w-sm p-4' 
+              : format === 'landscape2' 
+              ? 'max-w-5xl p-4' 
+              : 'max-w-3xl p-8'
+          }`}
           dangerouslySetInnerHTML={{ __html: htmlContent }}
         />
       </div>

@@ -344,6 +344,16 @@ export function CustomerProfileModal({
                 <span className="bg-blue-50 text-blue-800 px-2 py-0.5 rounded font-semibold text-[11px] border border-blue-200">
                   {customer.type}
                 </span>
+                {customer.wilaya && (
+                  <span className="bg-slate-100 text-slate-800 px-2 py-0.5 rounded font-semibold text-[11px] border border-slate-300">
+                    📍 {customer.wilaya}
+                  </span>
+                )}
+                {customer.activityName && (
+                  <span className="bg-indigo-50 text-indigo-800 px-2 py-0.5 rounded font-semibold text-[11px] border border-indigo-200">
+                    💼 {customer.activityName}
+                  </span>
+                )}
                 {customer.hidePricesOnDeliveryNote && (
                   <span className="bg-amber-100 text-amber-900 px-2 py-0.5 rounded font-bold text-[10px] border border-amber-300">
                     Sans prix B.L.

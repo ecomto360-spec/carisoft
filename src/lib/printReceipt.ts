@@ -37,6 +37,7 @@ export interface AttachmentItemData {
   driverName: string;
   deliveryCount: number;
   totalQuantity: number;
+  productName?: string;
 }
 
 export interface AttachmentPrintData {
@@ -46,6 +47,8 @@ export interface AttachmentPrintData {
   companyLogo?: string;
   customerName: string;
   customerCode?: string;
+  truckFilter?: string;
+  productFilter?: string;
   startDate: string;
   endDate: string;
   items: AttachmentItemData[];
@@ -109,6 +112,14 @@ export interface InvoicePrintData {
   totalTVA: number;
   timbre: number;
   totalTTC: number;
+  status?: string;
+  isCancelled?: boolean;
+  cancelReason?: string;
+  cancelledAt?: string;
+  cancelledBy?: string;
+  orderNumber?: string;
+  type?: 'standard' | 'avoir';
+  notes?: string;
   companyName?: string;
   companyActivity?: string;
   companyAddress?: string;
@@ -164,10 +175,250 @@ export function isInsideIframe(): boolean {
   }
 }
 
-export function generateBLHtml(data: DeliveryPrintData, format: 'A4' | 'ticket' = 'A4'): string {
-  const isTicket = format === 'ticket';
+export type DeliveryPrintFormat = 'landscape2' | 'label' | 'ticket' | 'A4' | 'A5';
 
+export function getStoredPrintFormat(): DeliveryPrintFormat {
+  try {
+    const val = localStorage.getItem('carisoft_bl_print_format');
+    if (val === 'landscape2' || val === 'label' || val === 'ticket' || val === 'A4' || val === 'A5') {
+      return val;
+    }
+  } catch (e) {}
+  return 'landscape2'; // Par défaut: A4 Paysage 2 copies (économie papier demandée par le client)
+}
+
+export function setStoredPrintFormat(format: DeliveryPrintFormat): void {
+  try {
+    localStorage.setItem('carisoft_bl_print_format', format);
+  } catch (e) {}
+}
+
+function generateSvgBarcode(code: string): string {
+  const widths = [1.2, 2.2, 1.0, 2.8, 1.8];
+  const spaces = [1.2, 0.8, 1.8, 1.0, 1.4];
+  let hash = 0;
+  for (let i = 0; i < code.length; i++) {
+    hash = (hash << 5) - hash + code.charCodeAt(i);
+    hash |= 0;
+  }
+  let svgBars = '';
+  let x = 4;
+  for (let i = 0; i < 28; i++) {
+    const w = widths[Math.abs(hash + i * 7) % widths.length];
+    const s = spaces[Math.abs(hash + i * 11) % spaces.length];
+    svgBars += `<rect x="${x.toFixed(1)}" y="0" width="${w}" height="24" fill="#000" />`;
+    x += w + s;
+  }
+  return `<svg width="${(x + 4).toFixed(0)}" height="24" viewBox="0 0 ${(x + 4).toFixed(0)} 24" xmlns="http://www.w3.org/2000/svg" style="display:block;margin:0 auto;">${svgBars}</svg>`;
+}
+
+function renderBLHalfCopy(data: DeliveryPrintData, copyTitle: string, badgeBg: string): string {
+  const timeStr = new Date(data.date).toLocaleTimeString('fr-FR', { hour: '2-digit', minute: '2-digit' });
+
+  return `
+    <div class="half-copy-inner">
+      <!-- En-tête -->
+      <div class="h-header">
+        <div class="h-header-left">
+          ${data.companyLogo ? `<img src="${data.companyLogo}" alt="Logo" class="h-logo" />` : ''}
+          <div>
+            <div class="h-company-name">${data.companyName || 'CARISOFT.next CARRIÈRE'}</div>
+            <div class="h-company-sub">Carrière d'Agrégats & Matériaux de Construction</div>
+            <div class="h-company-meta">${data.companyAddress || 'Zone Industrielle'} | Tél: ${data.companyPhone || '025 00 00 00'}</div>
+          </div>
+        </div>
+        <div class="h-header-right">
+          <div class="h-copy-badge" style="background-color: ${badgeBg};">${copyTitle}</div>
+          <div class="h-bl-number">${data.number}</div>
+          <div class="h-date">${formatDate(data.date)} ${timeStr}</div>
+        </div>
+      </div>
+
+      <!-- Client & Transport (2 colonnes) -->
+      <div class="h-info-grid">
+        <div class="h-info-box">
+          <div class="h-box-label">CLIENT FACTURÉ</div>
+          <div class="h-box-main">${data.customerName}</div>
+          <div class="h-box-sub">Code: <strong>${data.customerCode || '-'}</strong> ${data.destination ? `| Chantier: <strong>${data.destination}</strong>` : ''}</div>
+        </div>
+        <div class="h-info-box">
+          <div class="h-box-label">VÉHICULE & TRANSPORT</div>
+          <div class="h-box-main font-mono">${data.truckMatricule}</div>
+          <div class="h-box-sub">Chauffeur: <strong>${data.driverName || 'Non spécifié'}</strong></div>
+        </div>
+      </div>
+
+      <!-- Marchandise (Hero Table) -->
+      <div class="h-table-wrap">
+        <table class="h-table">
+          <thead>
+            <tr>
+              <th style="text-align: left;">Désignation Marchandise</th>
+              <th style="text-align: right; width: 110px;">Quantité (T)</th>
+              ${data.hidePrices ? '' : `
+              <th style="text-align: right; width: 85px;">P.U HT</th>
+              <th style="text-align: right; width: 95px;">Total HT</th>
+              `}
+            </tr>
+          </thead>
+          <tbody>
+            <tr>
+              <td>
+                <div class="h-prod-title">${data.productName}</div>
+                ${data.productCode ? `<div class="h-prod-code">Réf: ${data.productCode}</div>` : ''}
+              </td>
+              <td class="h-prod-qty">
+                ${data.netWeight.toFixed(2)} ${data.productUnit}
+              </td>
+              ${data.hidePrices ? '' : `
+              <td class="h-prod-price">${formatCurrency(data.priceHT)}</td>
+              <td class="h-prod-total">${formatCurrency(data.totalHT)}</td>
+              `}
+            </tr>
+          </tbody>
+        </table>
+      </div>
+
+      <!-- Pesée Pont-Bascule (Barre discrète) -->
+      <div class="h-weights-bar">
+        <span class="h-weights-title">PESÉE :</span>
+        <span>Brut: <strong>${data.grossWeight.toFixed(2)} T</strong></span>
+        <span>|</span>
+        <span>Tare: <strong>${data.tare.toFixed(2)} T</strong></span>
+        <span>|</span>
+        <span>Net: <strong style="color: #1d4ed8;">${data.netWeight.toFixed(2)} T</strong></span>
+      </div>
+
+      <!-- Totaux financiers -->
+      ${data.hidePrices ? '' : `
+      <div class="h-totals-row">
+        <div class="h-total-item">Total HT: <strong>${formatCurrency(data.totalHT)}</strong></div>
+        <div class="h-total-item">TVA (${data.tvaRate}%): <strong>${formatCurrency(data.totalTVA)}</strong></div>
+        <div class="h-total-ttc">TOTAL TTC: <strong>${formatCurrency(data.totalTTC)}</strong></div>
+      </div>
+      `}
+
+      ${data.remarks ? `<div class="h-remarks">OBS: ${data.remarks}</div>` : ''}
+
+      <!-- Signatures -->
+      <div class="h-signatures">
+        <div class="h-sign-col">
+          <div class="h-sign-label">Visa Pont-Bascule</div>
+          <div class="h-sign-line"></div>
+        </div>
+        <div class="h-sign-col">
+          <div class="h-sign-label">Visa Chauffeur / Client</div>
+          <div class="h-sign-line"></div>
+        </div>
+      </div>
+    </div>
+  `;
+}
+
+export function generateBLHtml(data: DeliveryPrintData, rawFormat: DeliveryPrintFormat | string = 'landscape2'): string {
+  // Normalisation du format
+  const norm = String(rawFormat).toLowerCase();
+  const isLandscape2 = norm === 'landscape2' || norm === 'landscape' || norm === 'a4_landscape_2copies' || norm === 'eco';
+  const isLabel = norm === 'label' || norm === 'etiquette' || norm === 'sticker';
+  const isTicket = norm === 'ticket' || norm === '80mm';
+  const isA5 = norm === 'a5';
+
+  // 1. FORMAT ÉTIQUETTE (Petite taille 58mm / 60mm pour imprimante étiquettes autocollantes)
+  if (isLabel) {
+    const timeStr = new Date(data.date).toLocaleTimeString('fr-FR', { hour: '2-digit', minute: '2-digit' });
+    return `
+<!DOCTYPE html>
+<html lang="fr">
+<head>
+  <meta charset="UTF-8">
+  <title>Étiquette Pesée - ${data.number}</title>
+  <style>
+    @page {
+      size: 58mm auto;
+      margin: 1.5mm;
+    }
+    * {
+      box-sizing: border-box;
+      -webkit-print-color-adjust: exact !important;
+      print-color-adjust: exact !important;
+    }
+    body {
+      font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, Arial, sans-serif;
+      width: 55mm;
+      margin: 0 auto;
+      padding: 2mm;
+      color: #000;
+      background: #fff;
+      font-size: 10px;
+      line-height: 1.25;
+    }
+    .text-center { text-align: center; }
+    .text-right { text-align: right; }
+    .font-bold { font-weight: bold; }
+    .label-header { text-align: center; border-bottom: 1.5px solid #000; padding-bottom: 3px; margin-bottom: 3px; }
+    .company-title { font-size: 11px; font-weight: 900; text-transform: uppercase; }
+    .badge-tag { display: inline-block; background: #000; color: #fff; font-size: 8px; font-weight: 800; padding: 1px 5px; border-radius: 2px; margin-top: 2px; }
+    .bl-code { font-size: 14px; font-weight: 900; font-family: monospace; text-align: center; margin: 3px 0; border: 1px dashed #000; padding: 2px; }
+    .meta-row { display: flex; justify-content: space-between; font-size: 9px; margin-bottom: 2px; }
+    .prod-box { border: 2px solid #000; padding: 4px; margin: 4px 0; text-align: center; background: #f4f4f4; }
+    .prod-name { font-size: 12px; font-weight: 900; text-transform: uppercase; }
+    .prod-weight { font-size: 13px; font-weight: 900; margin-top: 1px; }
+    .weights-row { font-size: 8.5px; border-top: 1px dotted #888; border-bottom: 1px dotted #888; padding: 2px 0; margin: 3px 0; display: flex; justify-content: space-between; }
+    .barcode-area { margin: 4px 0 2px 0; text-align: center; }
+    @media print {
+      body { width: 100%; margin: 0; padding: 1mm; }
+      .no-print { display: none !important; }
+    }
+  </style>
+</head>
+<body>
+  <div class="label-header">
+    <div class="company-title">${data.companyName || 'CARISOFT.next CARRIERE'}</div>
+    <div class="badge-tag">TICKET DE PESÉE</div>
+  </div>
+
+  <div class="bl-code">${data.number}</div>
+  <div class="meta-row"><span>Date:</span> <span>${formatDate(data.date)} ${timeStr}</span></div>
+  <div class="meta-row"><span>Client:</span> <span class="font-bold">${data.customerName}</span></div>
+  <div class="meta-row"><span>Camion:</span> <span class="font-bold" style="font-family: monospace;">${data.truckMatricule}</span></div>
+  ${data.driverName ? `<div class="meta-row"><span>Chauffeur:</span> <span>${data.driverName}</span></div>` : ''}
+  ${data.destination ? `<div class="meta-row"><span>Chantier:</span> <span>${data.destination}</span></div>` : ''}
+
+  <!-- Marchandise / Poids Hero -->
+  <div class="prod-box">
+    <div class="prod-name">${data.productName}</div>
+    <div class="prod-weight">NET: ${data.netWeight.toFixed(2)} ${data.productUnit}</div>
+  </div>
+
+  <!-- Détail pesée -->
+  <div class="weights-row">
+    <span>Brut: ${data.grossWeight.toFixed(2)}T</span>
+    <span>Tare: ${data.tare.toFixed(2)}T</span>
+  </div>
+
+  ${data.hidePrices ? '' : `
+  <div class="meta-row" style="font-weight: bold; font-size: 10px; margin-top: 3px; border-top: 1px solid #000; padding-top: 2px;">
+    <span>TTC:</span> <span>${formatCurrency(data.totalTTC)}</span>
+  </div>
+  `}
+
+  <div class="barcode-area">
+    ${generateSvgBarcode(data.number)}
+    <div style="font-size: 8px; font-family: monospace; letter-spacing: 1px;">${data.number}</div>
+  </div>
+
+  <div style="display: flex; justify-content: space-between; font-size: 8px; margin-top: 6px; text-align: center;">
+    <div>Visa Bascule<br>______</div>
+    <div>Visa Chauffeur<br>______</div>
+  </div>
+</body>
+</html>
+    `;
+  }
+
+  // 2. FORMAT TICKET 80MM (Imprimante de caisse thermique standard)
   if (isTicket) {
+    const timeStr = new Date(data.date).toLocaleTimeString('fr-FR', { hour: '2-digit', minute: '2-digit' });
     return `
 <!DOCTYPE html>
 <html lang="fr">
@@ -220,7 +471,7 @@ export function generateBLHtml(data: DeliveryPrintData, format: 'A4' | 'ticket' 
   <div class="title">${data.companyName || 'CARISOFT.next CARRIERE'}</div>
   <div class="subtitle">BON DE LIVRAISON</div>
   <div class="text-center font-bold" style="font-size: 13px;">${data.number}</div>
-  <div class="text-center" style="font-size: 9px;">${formatDate(data.date)} - ${new Date(data.date).toLocaleTimeString('fr-FR', { hour: '2-digit', minute: '2-digit' })}</div>
+  <div class="text-center" style="font-size: 9px;">${formatDate(data.date)} - ${timeStr}</div>
   
   <div class="border-top">
     <div class="row"><span class="font-bold">CLIENT:</span> <span>${data.customerName}</span></div>
@@ -269,7 +520,371 @@ export function generateBLHtml(data: DeliveryPrintData, format: 'A4' | 'ticket' 
     `;
   }
 
-  // Format A4 Standard
+  // 3. FORMAT PRINCIPAL : A4 PAYSAGE 2 COPIES (DEMI-PAGE ÉCONOMIE PAPIER)
+  // 1 feuille A4 paysage = 2 exemplaires complets côte à côte avec ligne de découpe !
+  if (isLandscape2) {
+    return `
+<!DOCTYPE html>
+<html lang="fr">
+<head>
+  <meta charset="UTF-8">
+  <title>Bons de Livraison (2 Copies) - ${data.number}</title>
+  <style>
+    @page {
+      size: A4 landscape;
+      margin: 4mm 6mm;
+    }
+    * {
+      box-sizing: border-box;
+      -webkit-print-color-adjust: exact !important;
+      print-color-adjust: exact !important;
+    }
+    body {
+      font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, "Helvetica Neue", Arial, sans-serif;
+      color: #0f172a;
+      background: #ffffff;
+      margin: 0;
+      padding: 0;
+      font-size: 11px;
+      line-height: 1.3;
+    }
+    .sheet-landscape {
+      display: flex;
+      flex-direction: row;
+      width: 100%;
+      height: 198mm;
+      max-height: 198mm;
+      overflow: hidden;
+    }
+    .half-copy {
+      flex: 1;
+      width: calc(50% - 7mm);
+      padding: 3mm 4mm;
+      display: flex;
+      flex-direction: column;
+      justify-content: space-between;
+    }
+    .half-copy-inner {
+      height: 100%;
+      display: flex;
+      flex-direction: column;
+      justify-content: space-between;
+    }
+    .cut-divider {
+      width: 14mm;
+      display: flex;
+      flex-direction: column;
+      align-items: center;
+      justify-content: center;
+      position: relative;
+    }
+    .cut-line {
+      flex: 1;
+      width: 1px;
+      border-right: 1.5px dashed #94a3b8;
+    }
+    .cut-label {
+      writing-mode: vertical-rl;
+      transform: rotate(180deg);
+      font-size: 8px;
+      font-weight: 800;
+      color: #64748b;
+      letter-spacing: 2px;
+      padding: 6px 0;
+      white-space: nowrap;
+    }
+    
+    /* En-tête */
+    .h-header {
+      display: flex;
+      justify-content: space-between;
+      align-items: flex-start;
+      border-bottom: 1.5px solid #0f172a;
+      padding-bottom: 4px;
+      margin-bottom: 5px;
+    }
+    .h-header-left {
+      display: flex;
+      align-items: center;
+      gap: 8px;
+    }
+    .h-logo {
+      max-height: 36px;
+      max-width: 80px;
+      object-fit: contain;
+    }
+    .h-company-name {
+      font-size: 12px;
+      font-weight: 900;
+      color: #0f172a;
+      text-transform: uppercase;
+      line-height: 1.1;
+    }
+    .h-company-sub {
+      font-size: 8px;
+      color: #64748b;
+      font-weight: 600;
+    }
+    .h-company-meta {
+      font-size: 7.5px;
+      color: #64748b;
+    }
+    .h-header-right {
+      text-align: right;
+    }
+    .h-copy-badge {
+      display: inline-block;
+      color: #ffffff;
+      font-size: 7.5px;
+      font-weight: 800;
+      padding: 1.5px 6px;
+      border-radius: 3px;
+      text-transform: uppercase;
+      letter-spacing: 0.5px;
+    }
+    .h-bl-number {
+      font-size: 13px;
+      font-weight: 900;
+      font-family: monospace;
+      color: #0f172a;
+      line-height: 1.2;
+      margin-top: 1px;
+    }
+    .h-date {
+      font-size: 8px;
+      color: #475569;
+    }
+
+    /* Grille infos Client / Camion */
+    .h-info-grid {
+      display: grid;
+      grid-template-columns: 1fr 1fr;
+      gap: 6px;
+      margin-bottom: 5px;
+    }
+    .h-info-box {
+      background: #f8fafc;
+      border: 1px solid #e2e8f0;
+      border-radius: 4px;
+      padding: 3px 6px;
+    }
+    .h-box-label {
+      font-size: 7px;
+      font-weight: 800;
+      color: #64748b;
+      text-transform: uppercase;
+      letter-spacing: 0.5px;
+    }
+    .h-box-main {
+      font-size: 11px;
+      font-weight: 800;
+      color: #0f172a;
+      white-space: nowrap;
+      overflow: hidden;
+      text-overflow: ellipsis;
+    }
+    .h-box-sub {
+      font-size: 8px;
+      color: #475569;
+    }
+
+    /* Table Marchandise (Hero) */
+    .h-table-wrap {
+      border: 1px solid #0f172a;
+      border-radius: 4px;
+      overflow: hidden;
+      margin-bottom: 4px;
+    }
+    .h-table {
+      width: 100%;
+      border-collapse: collapse;
+      font-size: 10px;
+    }
+    .h-table th {
+      background: #0f172a;
+      color: #ffffff;
+      padding: 3px 6px;
+      font-size: 8px;
+      font-weight: 800;
+      text-transform: uppercase;
+    }
+    .h-table td {
+      padding: 4px 6px;
+      border-bottom: 1px solid #e2e8f0;
+    }
+    .h-prod-title {
+      font-size: 12px;
+      font-weight: 900;
+      color: #0f172a;
+    }
+    .h-prod-code {
+      font-size: 7.5px;
+      color: #64748b;
+      font-family: monospace;
+    }
+    .h-prod-qty {
+      text-align: right;
+      font-size: 12px;
+      font-weight: 900;
+      color: #1d4ed8;
+      font-family: monospace;
+    }
+    .h-prod-price {
+      text-align: right;
+      font-family: monospace;
+      font-size: 9.5px;
+    }
+    .h-prod-total {
+      text-align: right;
+      font-family: monospace;
+      font-size: 10.5px;
+      font-weight: 800;
+      color: #0f172a;
+    }
+
+    /* Barre discrète de pesée */
+    .h-weights-bar {
+      display: flex;
+      justify-content: space-between;
+      align-items: center;
+      background: #f8fafc;
+      border: 1px dashed #cbd5e1;
+      border-radius: 3px;
+      padding: 2px 6px;
+      margin-bottom: 4px;
+      font-size: 8.5px;
+      color: #475569;
+    }
+    .h-weights-bar strong {
+      font-family: monospace;
+      font-size: 9.5px;
+      color: #0f172a;
+    }
+    .h-weights-title {
+      font-size: 7.5px;
+      font-weight: 800;
+      color: #64748b;
+    }
+
+    /* Ligne Totaux financiers */
+    .h-totals-row {
+      display: flex;
+      justify-content: flex-end;
+      align-items: center;
+      gap: 12px;
+      background: #f1f5f9;
+      border: 1px solid #e2e8f0;
+      border-radius: 4px;
+      padding: 3px 8px;
+      margin-bottom: 4px;
+      font-size: 9px;
+    }
+    .h-total-item strong {
+      font-family: monospace;
+      color: #0f172a;
+    }
+    .h-total-ttc {
+      background: #0f172a;
+      color: #ffffff;
+      padding: 2px 6px;
+      border-radius: 3px;
+      font-size: 10px;
+    }
+    .h-total-ttc strong {
+      color: #60a5fa;
+      font-family: monospace;
+      font-size: 11px;
+    }
+
+    .h-remarks {
+      font-size: 8px;
+      color: #64748b;
+      margin-bottom: 3px;
+      font-style: italic;
+    }
+
+    /* Signatures */
+    .h-signatures {
+      display: grid;
+      grid-template-columns: 1fr 1fr;
+      gap: 16px;
+      margin-top: 4px;
+      text-align: center;
+    }
+    .h-sign-col {
+      border-top: 1px solid #94a3b8;
+      padding-top: 2px;
+    }
+    .h-sign-label {
+      font-size: 8px;
+      font-weight: 700;
+      color: #475569;
+      text-transform: uppercase;
+    }
+    .h-sign-line {
+      height: 18px;
+    }
+
+    @media print {
+      body { margin: 0; padding: 0; }
+      .sheet-landscape { width: 100%; height: 100%; }
+      .no-print { display: none !important; }
+    }
+  </style>
+</head>
+<body>
+  <div class="sheet-landscape">
+    <!-- COPIE 1 : EXEMPLAIRE CLIENT -->
+    <div class="half-copy">
+      ${renderBLHalfCopy(data, 'EXEMPLAIRE CLIENT', '#1d4ed8')}
+    </div>
+
+    <!-- LIGNE DE DÉCOUPE CENTRALE -->
+    <div class="cut-divider">
+      <div class="cut-line"></div>
+      <div class="cut-label">✂ DÉCOUPER ICI / FOLD & CUT ✂</div>
+      <div class="cut-line"></div>
+    </div>
+
+    <!-- COPIE 2 : EXEMPLAIRE CARRIÈRE / SOUCHE -->
+    <div class="half-copy">
+      ${renderBLHalfCopy(data, 'EXEMPLAIRE CARRIÈRE / SOUCHE', '#0f172a')}
+    </div>
+  </div>
+</body>
+</html>
+    `;
+  }
+
+  // 4. FORMAT A5 (Demi-Page 1 seule copie)
+  if (isA5) {
+    return `
+<!DOCTYPE html>
+<html lang="fr">
+<head>
+  <meta charset="UTF-8">
+  <title>Bon de Livraison A5 - ${data.number}</title>
+  <style>
+    @page {
+      size: A5 landscape;
+      margin: 6mm;
+    }
+    * { box-sizing: border-box; -webkit-print-color-adjust: exact !important; print-color-adjust: exact !important; }
+    body { font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, sans-serif; color: #0f172a; margin: 0; padding: 0; font-size: 11px; }
+    .a5-container { height: 100%; display: flex; flex-direction: column; justify-content: space-between; }
+    @media print { .no-print { display: none !important; } }
+  </style>
+</head>
+<body>
+  <div class="a5-container">
+    ${renderBLHalfCopy(data, 'BON DE LIVRAISON', '#1d4ed8')}
+  </div>
+</body>
+</html>
+    `;
+  }
+
+  // 5. FORMAT A4 PORTRAIT CLASSIQUE (1 Copie pleine page)
   return `
 <!DOCTYPE html>
 <html lang="fr">
@@ -601,8 +1216,8 @@ export function generateBLHtml(data: DeliveryPrintData, format: 'A4' | 'ticket' 
  * 2. Triggers print on that iframe.
  * 3. Falls back to opening a dedicated print popup or page if iframe modal is blocked.
  */
-export function executePrint(data: DeliveryPrintData, format: 'A4' | 'ticket' = 'A4'): boolean {
-  const htmlContent = generateBLHtml(data, format);
+export function executePrint(data: DeliveryPrintData, rawFormat: DeliveryPrintFormat | string = 'landscape2'): boolean {
+  const htmlContent = generateBLHtml(data, rawFormat);
 
   // If inside iframe or sandbox, open popup window or dedicated tab
   if (isInsideIframe()) {
@@ -680,6 +1295,7 @@ export function generateAttachmentReportHtml(data: AttachmentPrintData): string 
     <tr style="background: ${idx % 2 === 0 ? '#ffffff' : '#f8fafc'};">
       <td style="padding: 9px 12px; font-family: monospace; font-weight: 700; font-size: 13px; border-bottom: 1px solid #e2e8f0; color: #0f172a;">${item.matricule}</td>
       <td style="padding: 9px 12px; font-size: 13px; font-weight: 600; border-bottom: 1px solid #e2e8f0; color: #1e293b; text-transform: uppercase;">${item.driverName || '-'}</td>
+      <td style="padding: 9px 12px; font-size: 12px; font-weight: 600; border-bottom: 1px solid #e2e8f0; color: #047857;">${item.productName || '-'}</td>
       <td style="padding: 9px 12px; text-align: center; font-family: monospace; font-size: 14px; font-weight: 700; border-bottom: 1px solid #e2e8f0; color: #0f172a;">${item.deliveryCount}</td>
       <td style="padding: 9px 12px; text-align: right; font-family: monospace; font-size: 14px; font-weight: 800; border-bottom: 1px solid #e2e8f0; color: #1d4ed8;">${item.totalQuantity.toLocaleString('fr-FR', { minimumFractionDigits: 2, maximumFractionDigits: 2 })} ${unitLabel}</td>
     </tr>
@@ -852,8 +1468,12 @@ export function generateAttachmentReportHtml(data: AttachmentPrintData): string 
   <!-- CLIENT SECTION -->
   <div class="client-section">
     <div>
-      <span class="client-label">Client : </span>
-      <span class="client-value">${data.customerName}</span>
+      <div>
+        <span class="client-label">Client : </span>
+        <span class="client-value">${data.customerName}</span>
+      </div>
+      ${data.truckFilter ? `<div style="font-size: 11px; margin-top: 3px; color: #1e293b;"><strong>Filtre Camion :</strong> ${data.truckFilter}</div>` : ''}
+      ${data.productFilter ? `<div style="font-size: 11px; margin-top: 2px; color: #1e293b;"><strong>Filtre Produit :</strong> ${data.productFilter}</div>` : ''}
     </div>
     ${data.customerCode ? `<div style="font-size: 12px; color: #475569; font-weight: bold;">Code : <span style="font-family: monospace;">${data.customerCode}</span></div>` : ''}
   </div>
@@ -862,18 +1482,19 @@ export function generateAttachmentReportHtml(data: AttachmentPrintData): string 
   <table class="data-table">
     <thead>
       <tr>
-        <th style="text-align: left; width: 25%;">Matricule</th>
-        <th style="text-align: left; width: 40%;">Chauffeur</th>
-        <th style="text-align: center; width: 15%;">Nbre Enlèv.</th>
-        <th style="text-align: right; width: 20%;">Quantité (${unitLabel})</th>
+        <th style="text-align: left; width: 22%;">Matricule</th>
+        <th style="text-align: left; width: 25%;">Chauffeur</th>
+        <th style="text-align: left; width: 25%;">Produit(s)</th>
+        <th style="text-align: center; width: 13%;">Nbre Enlèv.</th>
+        <th style="text-align: right; width: 15%;">Quantité (${unitLabel})</th>
       </tr>
     </thead>
     <tbody>
-      ${rowsHtml || `<tr><td colspan="4" style="text-align: center; padding: 20px; color: #94a3b8;">Aucun enlèvement enregistré pour ce client sur cette période</td></tr>`}
+      ${rowsHtml || `<tr><td colspan="5" style="text-align: center; padding: 20px; color: #94a3b8;">Aucun enlèvement enregistré pour ce client sur cette période</td></tr>`}
     </tbody>
     <tfoot>
       <tr class="total-row">
-        <td colspan="2" style="text-align: left; text-transform: uppercase;">Total Général</td>
+        <td colspan="3" style="text-align: left; text-transform: uppercase;">Total Général</td>
         <td style="text-align: center; font-family: monospace; font-size: 16px;">${data.totalDeliveries}</td>
         <td style="text-align: right; font-family: monospace; font-size: 16px; color: #1d4ed8;">${data.totalQuantity.toLocaleString('fr-FR', { minimumFractionDigits: 2, maximumFractionDigits: 2 })} ${unitLabel}</td>
       </tr>
@@ -1096,7 +1717,7 @@ export function generateInvoiceHtml(data: InvoicePrintData): string {
 <html lang="fr">
 <head>
   <meta charset="UTF-8">
-  <title>Facture N° ${data.number}</title>
+  <title>Facture N° ${data.number}${data.isCancelled ? ' [ANNULÉE]' : ''}</title>
   <style>
     @page {
       size: A4 portrait;
@@ -1115,7 +1736,28 @@ export function generateInvoiceHtml(data: InvoicePrintData): string {
       padding: 0;
       font-size: 12px;
       line-height: 1.4;
+      position: relative;
     }
+    ${data.isCancelled ? `
+    .watermark-cancelled {
+      position: fixed;
+      top: 40%;
+      left: 10%;
+      right: 10%;
+      transform: translateY(-50%) rotate(-25deg);
+      font-size: 72px;
+      font-weight: 900;
+      color: rgba(220, 38, 38, 0.12);
+      text-align: center;
+      text-transform: uppercase;
+      letter-spacing: 6px;
+      pointer-events: none;
+      z-index: 999;
+      border: 8px solid rgba(220, 38, 38, 0.15);
+      padding: 20px;
+      border-radius: 12px;
+    }
+    ` : ''}
     .header-table {
       width: 100%;
       border-bottom: 2px solid #0f172a;
@@ -1154,9 +1796,9 @@ export function generateInvoiceHtml(data: InvoicePrintData): string {
       text-align: right;
     }
     .doc-tag {
-      background: #eff6ff;
-      border: 2px solid #1d4ed8;
-      color: #1d4ed8;
+      background: ${data.isCancelled ? '#fef2f2' : '#eff6ff'};
+      border: 2px solid ${data.isCancelled ? '#dc2626' : '#1d4ed8'};
+      color: ${data.isCancelled ? '#dc2626' : '#1d4ed8'};
       font-family: monospace;
       font-weight: 900;
       font-size: 20px;
@@ -1263,6 +1905,33 @@ export function generateInvoiceHtml(data: InvoicePrintData): string {
       font-weight: 700;
       text-transform: uppercase;
     }
+    .cancel-alert-box {
+      background: #fff1f2;
+      border: 2px solid #e11d48;
+      border-radius: 8px;
+      padding: 12px 16px;
+      margin-bottom: 16px;
+      color: #9f1239;
+    }
+    .cancel-alert-title {
+      font-size: 14px;
+      font-weight: 900;
+      text-transform: uppercase;
+      display: flex;
+      align-items: center;
+      gap: 6px;
+    }
+    .cancel-alert-reason {
+      font-size: 12px;
+      margin-top: 4px;
+      font-weight: 700;
+      color: #be123c;
+    }
+    .cancel-alert-meta {
+      font-size: 11px;
+      margin-top: 2px;
+      color: #881337;
+    }
     @media print {
       body { margin: 0; padding: 0; }
       .no-print { display: none !important; }
@@ -1270,6 +1939,24 @@ export function generateInvoiceHtml(data: InvoicePrintData): string {
   </style>
 </head>
 <body>
+  ${data.isCancelled ? `<div class="watermark-cancelled">FACTURE ANNULÉE</div>` : ''}
+
+  ${data.isCancelled ? `
+  <div class="cancel-alert-box">
+    <div class="cancel-alert-title">
+      ⚠️ DOCUMENT COMPTABLE : FACTURE ANNULÉE / AVOIR
+    </div>
+    <div class="cancel-alert-reason">
+      Motif obligatoire d'annulation : <strong>${data.cancelReason || 'Non spécifié'}</strong>
+    </div>
+    ${data.cancelledAt ? `
+    <div class="cancel-alert-meta">
+      Annulée le : <strong>${formatDate(data.cancelledAt)}</strong> ${data.cancelledBy ? `par le commercial : <strong>${data.cancelledBy}</strong>` : ''}
+    </div>
+    ` : ''}
+  </div>
+  ` : ''}
+
   <!-- HEADER -->
   <table class="header-table">
     <tr>
@@ -1291,8 +1978,10 @@ export function generateInvoiceHtml(data: InvoicePrintData): string {
       <td style="vertical-align: top; text-align: right; width: 40%;">
         <div class="doc-badge">
           <div class="doc-tag">${data.number}</div>
+          ${data.isCancelled ? `<div style="color: #e11d48; font-weight: 900; font-size: 13px; margin-top: 3px;">[ ANNULÉE ]</div>` : ''}
           <div class="date-meta">Date de Facture : <strong>${formatDate(data.date)}</strong></div>
           <div class="date-meta">Mode de paiement : <strong>${data.paymentMode || 'Terme'}</strong></div>
+          ${data.orderNumber ? `<div class="date-meta" style="color: #1d4ed8; font-weight: bold;">Réf. Bon de Commande : ${data.orderNumber}</div>` : ''}
         </div>
       </td>
     </tr>
@@ -1335,9 +2024,14 @@ export function generateInvoiceHtml(data: InvoicePrintData): string {
   <div class="bottom-section">
     <div style="flex: 1; font-size: 11px; color: #475569;">
       <p style="margin: 0 0 6px 0;">Arrêtée la présente facture à la somme TTC de :</p>
-      <div style="font-weight: 800; color: #0f172a; font-size: 13px; background: #f8fafc; border: 1px solid #cbd5e1; padding: 8px 12px; border-radius: 6px;">
+      <div style="font-weight: 800; color: #0f172a; font-size: 13px; background: #f8fafc; border: 1px solid #cbd5e1; padding: 8px 12px; border-radius: 6px; margin-bottom: 8px;">
         ${data.totalTTC.toLocaleString('fr-FR', { minimumFractionDigits: 2, maximumFractionDigits: 2 })} DA
       </div>
+      ${data.notes ? `
+      <div style="background: #f1f5f9; border-left: 3px solid #64748b; padding: 6px 10px; font-size: 11px; color: #334155; margin-top: 6px;">
+        <strong>Observations / Conditions :</strong> ${data.notes}
+      </div>
+      ` : ''}
     </div>
 
     <div class="totals-box">

@@ -6,17 +6,25 @@ import { Button } from '../../components/ui/Button';
 import { 
   ArrowLeft, Save, Printer, Check, Plus, X, 
   Search, Star, Truck as TruckIcon, Layers, Calendar, Clock,
-  CreditCard, Tag, AlertCircle, Download, ExternalLink, RefreshCw,
+  CreditCard, Tag, Copy, AlertCircle, Download, ExternalLink, RefreshCw,
   CheckCircle2, AlertTriangle, FileText, UserCheck, ShieldAlert,
   ChevronDown, Phone, Lock, Scale, Calculator, PackageCheck, Unlink
 } from 'lucide-react';
 import { formatCurrency, formatDate } from '../../lib/utils';
-import { executePrint, generateBLHtml, type DeliveryPrintData } from '../../lib/printReceipt';
+import { 
+  executePrint, 
+  generateBLHtml, 
+  getStoredPrintFormat, 
+  setStoredPrintFormat, 
+  type DeliveryPrintData, 
+  type DeliveryPrintFormat 
+} from '../../lib/printReceipt';
 import { ClientPickerModal } from './ClientPickerModal';
 import { TruckPickerModal } from './TruckPickerModal';
 import { FavoriteTrucksModal } from './FavoriteTrucksModal';
 import { ProductPickerModal } from './ProductPickerModal';
 import { CustomerProfileModal } from '../../components/clients/CustomerProfileModal';
+import { Accordion, AccordionItem } from '../../components/ui/Accordion';
 import { Customer, Truck, Product, Order, OrderItem } from '../../types';
 import { useAuthStore } from '../../store/authStore';
 
@@ -32,20 +40,33 @@ export function DeliveryForm() {
   const initialOrderId = searchParams.get('orderId') || '';
   const initialCustomerId = searchParams.get('customerId') || '';
 
-  // Live Query DB Data
+  // Linked Order & Customer Selection State
+  const [linkedOrderId, setLinkedOrderId] = useState<string>(initialOrderId);
+  const [customerId, setCustomerId] = useState<string>(initialCustomerId);
+
+  // Live Query DB Data (Optimized with targeted indexes)
   const customers = useLiveQuery(() => db.customers.where('companyId').equals(currentCompanyId).filter(x => x.companyId === currentCompanyId).toArray()) || [];
   const products = useLiveQuery(() => db.products.where('companyId').equals(currentCompanyId).filter(p => p.active !== false).toArray()) || [];
   const trucks = useLiveQuery(() => db.trucks.where('companyId').equals(currentCompanyId).filter(x => x.companyId === currentCompanyId).toArray()) || [];
   const drivers = useLiveQuery(() => db.drivers.where('companyId').equals(currentCompanyId).filter(x => x.companyId === currentCompanyId).toArray()) || [];
   const conventions = useLiveQuery(() => db.conventions.filter(x => !x.companyId || x.companyId === currentCompanyId).toArray()) || [];
   const productPrices = useLiveQuery(() => db.productPrices.where('companyId').equals(currentCompanyId).filter(x => x.companyId === currentCompanyId).toArray()) || [];
-  const deliveries = useLiveQuery(() => db.deliveryNotes.where('companyId').equals(currentCompanyId).filter(x => x.companyId === currentCompanyId).toArray()) || [];
-  const orders = useLiveQuery(() => db.orders.where('companyId').equals(currentCompanyId).toArray()) || [];
-  const orderItems = useLiveQuery(() => db.orderItems.where('companyId').equals(currentCompanyId).toArray()) || [];
+  const deliveries = useLiveQuery(
+    () => customerId 
+      ? db.deliveryNotes.where('customerId').equals(customerId).limit(50).toArray() 
+      : [],
+    [customerId]
+  ) || [];
+  const orders = useLiveQuery(() => currentCompanyId ? db.orders.where('companyId').equals(currentCompanyId).limit(50).toArray() : [], [currentCompanyId]) || [];
+  const orderItems = useLiveQuery(
+    () => linkedOrderId 
+      ? db.orderItems.where('orderId').equals(linkedOrderId).toArray() 
+      : [],
+    [linkedOrderId]
+  ) || [];
   const companySettings = useLiveQuery(() => db.settings.toCollection().first());
 
-  // Linked Order State
-  const [linkedOrderId, setLinkedOrderId] = useState<string>(initialOrderId);
+  // Linked Order Items & State
   const [linkedOrderItemId, setLinkedOrderItemId] = useState<string>('');
   const [orderSyncToast, setOrderSyncToast] = useState<{ number: string; message: string } | null>(null);
 
@@ -79,7 +100,6 @@ export function DeliveryForm() {
 
   // Client Selection State
   const [clientCodeInput, setClientCodeInput] = useState('');
-  const [customerId, setCustomerId] = useState('');
 
   // Tax Type: 'HT' or 'TTC'
   const [taxType, setTaxType] = useState<'HT' | 'TTC'>('TTC');
@@ -107,7 +127,11 @@ export function DeliveryForm() {
   const [isSaving, setIsSaving] = useState(false);
   const [saveSuccess, setSaveSuccess] = useState<{ number: string; id: string } | null>(null);
   const [showPrintModal, setShowPrintModal] = useState(false);
-  const [printFormat, setPrintFormat] = useState<'A4' | 'ticket'>('A4');
+  const [printFormat, setPrintFormatState] = useState<DeliveryPrintFormat>(getStoredPrintFormat());
+  const setPrintFormat = (fmt: DeliveryPrintFormat) => {
+    setPrintFormatState(fmt);
+    setStoredPrintFormat(fmt);
+  };
   const [savedDeliveryData, setSavedDeliveryData] = useState<(DeliveryPrintData & { id?: string }) | null>(null);
 
   // Resolved Entities
@@ -115,23 +139,51 @@ export function DeliveryForm() {
   const selectedProduct = useMemo(() => products.find(p => p.id === productId), [products, productId]);
   const selectedTruck = useMemo(() => trucks.find(t => t.id === truckId), [trucks, truckId]);
 
-  // Count unique favorite trucks (marked as favorite OR used for this customer)
-  const clientFavoriteTrucksCount = useMemo(() => {
-    const set = new Set<string>();
-    trucks.forEach(t => {
-      if (t.isFavorite && t.active !== false) {
-        set.add(t.id);
-      }
-    });
-    if (customerId && deliveries) {
-      deliveries.forEach(d => {
-        if (d.customerId === customerId && d.truckId) {
-          set.add(d.truckId);
+  // Client Habitual / Favorite Trucks (auto-assigned and historically frequent)
+  const clientFavoriteTrucks = useMemo(() => {
+    if (!customerId) return [];
+    const custFavIds = new Set<string>(selectedCustomer?.favoriteTruckIds || []);
+    
+    // Count deliveries per truck for this customer
+    const deliveryCountMap = new Map<string, number>();
+    if (deliveries) {
+      deliveries.forEach(del => {
+        if (del.customerId === customerId && del.truckId) {
+          deliveryCountMap.set(del.truckId, (deliveryCountMap.get(del.truckId) || 0) + 1);
         }
       });
     }
-    return set.size;
-  }, [trucks, customerId, deliveries]);
+
+    const activeTrucks = trucks.filter(t => t.active !== false);
+    const matched = activeTrucks.filter(t => 
+      custFavIds.has(t.id) || 
+      (deliveryCountMap.get(t.id) || 0) > 0 ||
+      t.isFavorite
+    );
+
+    return matched.sort((a, b) => {
+      // 1. Trucks in customer's explicit favorite/assigned list
+      const aInCust = custFavIds.has(a.id) ? 1 : 0;
+      const bInCust = custFavIds.has(b.id) ? 1 : 0;
+      if (aInCust !== bInCust) return bInCust - aInCust;
+
+      // 2. Number of previous deliveries with this customer
+      const aCount = deliveryCountMap.get(a.id) || 0;
+      const bCount = deliveryCountMap.get(b.id) || 0;
+      if (aCount !== bCount) return bCount - aCount;
+
+      // 3. Global isFavorite
+      if (a.isFavorite && !b.isFavorite) return -1;
+      if (!a.isFavorite && b.isFavorite) return 1;
+
+      return a.matricule.localeCompare(b.matricule);
+    });
+  }, [customerId, selectedCustomer, deliveries, trucks]);
+
+  // Count unique favorite trucks (marked as favorite OR used for this customer)
+  const clientFavoriteTrucksCount = useMemo(() => {
+    return clientFavoriteTrucks.length;
+  }, [clientFavoriteTrucks]);
 
   // Active Customer Orders
   const customerOrders = useMemo(() => {
@@ -297,8 +349,13 @@ export function DeliveryForm() {
     if (isAutoPrice && customerId && productId) {
       let resolvedPrice = 0;
 
+      // 0. Check custom negotiated price for this customer first!
+      if (selectedCustomer?.customPrices && selectedCustomer.customPrices[productId] !== undefined && selectedCustomer.customPrices[productId] > 0) {
+        resolvedPrice = selectedCustomer.customPrices[productId];
+      }
+
       // 1. Check customer family convention match
-      if (selectedCustomer?.familyId) {
+      if (!resolvedPrice && selectedCustomer?.familyId) {
         const custConventions = conventions.filter(c => c.familyId === selectedCustomer.familyId);
         const matchingPrice = productPrices.find(pp => 
           pp.productId === productId && custConventions.some(c => c.id === pp.conventionId)
@@ -308,10 +365,10 @@ export function DeliveryForm() {
         }
       }
 
-      // 2. Direct convention ID
+      // 2. Direct convention ID / Tarif Standard
       if (!resolvedPrice) {
         const directPrice = productPrices.find(pp => 
-          pp.productId === productId && pp.conventionId === selectedCustomer?.familyId
+          pp.productId === productId && (pp.conventionId === 'C_CONV1' || pp.conventionId === selectedCustomer?.familyId)
         );
         if (directPrice && directPrice.priceHT > 0) {
           resolvedPrice = directPrice.priceHT;
@@ -381,10 +438,10 @@ export function DeliveryForm() {
   };
 
   // Single truck selection handler (mutually exclusive)
-  const handleSelectTruck = (truck: Truck, drvName?: string, isFav = false) => {
+  const handleSelectTruck = async (truck: Truck, drvName?: string, isFav = false) => {
     setTruckId(truck.id);
     setTare(truck.tare);
-    setIsFavoriteTruckSelected(isFav || Boolean(truck.isFavorite));
+    setIsFavoriteTruckSelected(isFav || Boolean(truck.isFavorite) || (selectedCustomer?.favoriteTruckIds || []).includes(truck.id));
     setFormError(null);
 
     if (truck.driverName) {
@@ -394,6 +451,49 @@ export function DeliveryForm() {
     } else if (truck.driverId) {
       const d = drivers.find(drv => drv.id === truck.driverId);
       if (d) setDriverName(d.name);
+    }
+
+    // Auto-assign this truck as favorite/habitual for this customer
+    if (customerId) {
+      try {
+        const cust = await db.customers.get(customerId);
+        if (cust) {
+          const currentFavs = cust.favoriteTruckIds || [];
+          if (!currentFavs.includes(truck.id)) {
+            await db.customers.update(customerId, {
+              favoriteTruckIds: [...currentFavs, truck.id],
+              lastTruckId: truck.id
+            });
+          } else {
+            await db.customers.update(customerId, {
+              lastTruckId: truck.id
+            });
+          }
+        }
+      } catch (e) {
+        console.error('Failed to auto-assign favorite truck for customer:', e);
+      }
+    }
+  };
+
+  // Toggle favorite truck for current customer
+  const handleToggleCustomerFavoriteTruck = async (targetTruckId: string) => {
+    if (!customerId) return;
+    try {
+      const cust = await db.customers.get(customerId);
+      if (cust) {
+        const currentFavs = new Set(cust.favoriteTruckIds || []);
+        if (currentFavs.has(targetTruckId)) {
+          currentFavs.delete(targetTruckId);
+        } else {
+          currentFavs.add(targetTruckId);
+        }
+        await db.customers.update(customerId, {
+          favoriteTruckIds: Array.from(currentFavs)
+        });
+      }
+    } catch (e) {
+      console.error('Failed to toggle customer favorite truck:', e);
     }
   };
 
@@ -551,6 +651,21 @@ export function DeliveryForm() {
         });
       }
 
+      // Ensure truck is remembered in customer's favorite/habitual trucks
+      if (selectedCustomer && truckId) {
+        const currentFavs = selectedCustomer.favoriteTruckIds || [];
+        if (!currentFavs.includes(truckId)) {
+          await db.customers.update(customerId, {
+            favoriteTruckIds: [...currentFavs, truckId],
+            lastTruckId: truckId
+          });
+        } else {
+          await db.customers.update(customerId, {
+            lastTruckId: truckId
+          });
+        }
+      }
+
       const printPayload: DeliveryPrintData & { id: string } = {
         id: deliveryId,
         number: deliveryPayload.number,
@@ -624,33 +739,71 @@ export function DeliveryForm() {
   return (
     <div className="max-w-6xl mx-auto space-y-4 pb-12 font-sans">
       
-      {/* Return & Breadcrumb Bar */}
-      <div className="flex items-center justify-between pb-1">
-        <Button 
-          variant="ghost" 
-          size="sm"
-          onClick={() => navigate('/deliveries')} 
-          className="cursor-pointer text-slate-600 hover:text-slate-900"
-        >
-          <ArrowLeft className="h-4 w-4 mr-1" />
-          Retour aux Bons de Livraison
-        </Button>
-        <span className="text-xs text-slate-500 font-mono">
-          Système de Pesée & Expédition Carrière
-        </span>
+      {/* Top Header & Immediate Action Buttons Bar */}
+      <div className="flex flex-wrap items-center justify-between gap-3 bg-white p-3 rounded-xl border border-slate-200 shadow-2xs">
+        <div className="flex items-center gap-3">
+          <Button 
+            variant="ghost" 
+            size="sm"
+            onClick={() => navigate('/deliveries')} 
+            className="cursor-pointer text-slate-600 hover:text-slate-900"
+          >
+            <ArrowLeft className="h-4 w-4 mr-1" />
+            <span className="hidden sm:inline">Bons de Livraison</span>
+          </Button>
+          <div className="flex items-center gap-2">
+            <span className="font-bold text-sm sm:text-base text-slate-900">
+              {isEditing ? 'Modifier Bon de Livraison' : 'Nouveau Bon de Livraison'}
+            </span>
+            <span className="text-[10px] bg-blue-100 text-blue-900 font-bold px-2 py-0.5 rounded border border-blue-200 font-mono">
+              PONT BASCULE
+            </span>
+          </div>
+        </div>
+
+        <div className="flex items-center gap-2">
+          <Button
+            variant="outline"
+            size="sm"
+            onClick={() => navigate('/deliveries')}
+            className="cursor-pointer text-xs"
+          >
+            Annuler
+          </Button>
+
+          <Button
+            size="sm"
+            onClick={() => handleSave(false)}
+            disabled={isSaving}
+            className="bg-emerald-600 hover:bg-emerald-500 text-white font-bold text-xs shadow-xs flex items-center gap-1.5 cursor-pointer disabled:opacity-50"
+          >
+            <Save className="h-3.5 w-3.5" />
+            Valider
+          </Button>
+
+          <Button
+            size="sm"
+            onClick={() => handleSave(true)}
+            disabled={isSaving}
+            className="bg-blue-600 hover:bg-blue-700 text-white font-bold text-xs shadow-xs flex items-center gap-1.5 cursor-pointer disabled:opacity-50"
+          >
+            <Printer className="h-3.5 w-3.5" />
+            Valider & Imprimer
+          </Button>
+        </div>
       </div>
 
       {/* Validation Error Banner */}
       {formError && (
-        <div className="bg-red-50 border border-red-300 text-red-800 px-4 py-3 rounded-xl flex items-center justify-between gap-3 shadow-xs animate-in fade-in">
+        <div className="bg-red-50 border border-red-300 text-red-800 px-4 py-2.5 rounded-xl flex items-center justify-between gap-3 shadow-xs animate-in fade-in">
           <div className="flex items-center gap-2 text-xs sm:text-sm font-bold">
-            <AlertTriangle className="h-5 w-5 text-red-600 shrink-0" />
+            <AlertTriangle className="h-4 w-4 text-red-600 shrink-0" />
             <span>{formError}</span>
           </div>
           <button 
             type="button"
             onClick={() => setFormError(null)}
-            className="text-red-500 hover:text-red-700 p-1"
+            className="text-red-500 hover:text-red-700 p-1 cursor-pointer"
           >
             <X className="h-4 w-4" />
           </button>
@@ -658,873 +811,544 @@ export function DeliveryForm() {
       )}
 
       {/* Main Container Window */}
-      <div className="bg-slate-50 rounded-xl border border-slate-300 shadow-xl overflow-hidden">
+      <div className="bg-slate-50 rounded-xl border border-slate-300 shadow-md overflow-hidden space-y-3 p-3 sm:p-4">
         
-        {/* TOP TITLE BAR: "Nouveau Bon de Livraison *" / "SARL MAHAJIR SIDAR..." */}
-        <div className="bg-linear-to-r from-blue-700 via-blue-800 to-indigo-900 text-white px-4 py-2.5 flex items-center justify-between shadow-xs select-none">
+        {/* Strip 1: N° Bon de Livraison, Date B.L., Heure, Type B.L. (HT vs TTC) */}
+        <div className="bg-white px-3.5 py-2.5 rounded-xl border border-slate-200 shadow-2xs flex flex-wrap items-center justify-between gap-3">
           <div className="flex items-center gap-2">
-            <span className="font-bold text-sm sm:text-base tracking-wide">
-              {isEditing ? 'Modifier Bon de Livraison' : 'Nouveau Bon de Livraison *'}
+            <span className="text-xs font-bold text-slate-700 uppercase tracking-tight">
+              B.L. N° :
             </span>
-            <span className="text-xs text-blue-200 hidden sm:inline">
-              — {companySettings?.name || 'SARL MAHAJIR SIDAR - CARRIERE D\'AGREGATS'}
-            </span>
+            <div className="bg-slate-900 text-white px-3 py-0.5 rounded text-sm font-mono font-extrabold tracking-wider border border-slate-800 shadow-2xs">
+              {blNumber || '----'}
+            </div>
           </div>
-          <div className="text-xs bg-blue-950/70 border border-blue-400/30 px-2.5 py-0.5 rounded font-mono font-bold text-blue-100">
-            PESÉE PONT BASCULE
+
+          <div className="flex flex-wrap items-center gap-3">
+            <div className="flex items-center gap-1.5 bg-slate-50 border border-slate-300 px-2 py-1 rounded-lg">
+              <Calendar className="h-3.5 w-3.5 text-slate-500" />
+              <span className="text-[11px] font-bold text-slate-700">Date :</span>
+              <input
+                type="date"
+                value={date}
+                onChange={(e) => setDate(e.target.value)}
+                className="bg-transparent text-xs font-mono font-bold text-slate-900 focus:outline-none cursor-pointer"
+              />
+            </div>
+
+            <div className="flex items-center gap-1.5 bg-slate-50 border border-slate-300 px-2 py-1 rounded-lg">
+              <Clock className="h-3.5 w-3.5 text-slate-500" />
+              <span className="text-[11px] font-bold text-slate-700">Heure :</span>
+              <input
+                type="time"
+                value={time}
+                onChange={(e) => setTime(e.target.value)}
+                className="bg-transparent text-xs font-mono font-bold text-slate-900 focus:outline-none cursor-pointer"
+              />
+            </div>
+
+            <div className="flex items-center gap-2 pl-2 border-l border-slate-200 text-xs">
+              <span className="text-[11px] font-bold text-slate-700">Type :</span>
+              <label className="flex items-center gap-1 cursor-pointer font-medium text-slate-700">
+                <input
+                  type="radio"
+                  name="taxType"
+                  value="HT"
+                  checked={taxType === 'HT'}
+                  onChange={() => setTaxType('HT')}
+                  className="text-blue-600 focus:ring-blue-500 cursor-pointer"
+                />
+                <span>HT</span>
+              </label>
+              <label className="flex items-center gap-1 cursor-pointer font-medium text-slate-700">
+                <input
+                  type="radio"
+                  name="taxType"
+                  value="TTC"
+                  checked={taxType === 'TTC'}
+                  onChange={() => setTaxType('TTC')}
+                  className="text-blue-600 focus:ring-blue-500 cursor-pointer"
+                />
+                <span>TTC</span>
+              </label>
+            </div>
           </div>
         </div>
 
-        <div className="p-4 sm:p-5 space-y-4 bg-slate-100/70">
+        {/* Strip 2: Two Main Columns (Left: Client & Product, Right: Truck & Weighing Scale) */}
+        <div className="grid grid-cols-1 lg:grid-cols-12 gap-3 items-start">
           
-          {/* SECTION 1: BL Number, Date, Heure, Client & Type B.L. */}
-          <div className="bg-white p-4 rounded-xl border border-slate-200 shadow-xs space-y-4">
+          {/* LEFT COLUMN: Client + Produit + Règlement & Total (6 cols) */}
+          <div className="lg:col-span-6 space-y-3">
             
-            {/* Top Row: Bon de Livraison, Date B.L., Heure */}
-            <div className="flex flex-wrap items-center justify-between gap-3 border-b border-slate-200 pb-3">
-              
-              {/* Bon de Livraison Badge */}
-              <div className="flex items-center gap-2">
-                <span className="text-xs font-bold text-slate-700 uppercase tracking-tight">
-                  Bon de Livraison
-                </span>
-                <div className="bg-slate-900 text-white px-3.5 py-1 rounded text-base font-mono font-extrabold tracking-wider border border-slate-800 shadow-xs">
-                  {blNumber || '----'}
-                </div>
-              </div>
-
-              {/* Date & Heure */}
-              <div className="flex items-center gap-3">
-                <div className="flex items-center gap-1.5 bg-slate-50 border border-slate-300 px-2.5 py-1 rounded-lg">
-                  <Calendar className="h-4 w-4 text-slate-500" />
-                  <span className="text-xs font-bold text-slate-700">Date B.L. :</span>
-                  <input
-                    type="date"
-                    value={date}
-                    onChange={(e) => setDate(e.target.value)}
-                    className="bg-transparent text-xs font-mono font-bold text-slate-900 focus:outline-none cursor-pointer"
-                  />
-                </div>
-
-                <div className="flex items-center gap-1.5 bg-slate-50 border border-slate-300 px-2.5 py-1 rounded-lg">
-                  <Clock className="h-4 w-4 text-slate-500" />
-                  <span className="text-xs font-bold text-slate-700">Heure :</span>
-                  <input
-                    type="time"
-                    value={time}
-                    onChange={(e) => setTime(e.target.value)}
-                    className="bg-transparent text-xs font-mono font-bold text-slate-900 focus:outline-none cursor-pointer"
-                  />
-                </div>
-              </div>
-
-            </div>
-
-            {/* Middle Row: Client Selection (Code + Name + Picker + Profil + Solde/Dette/Plafond) */}
-            <div className="grid grid-cols-1 lg:grid-cols-12 gap-4 items-center">
-              
-              {/* Client Code + Name + Button */}
-              <div className="lg:col-span-8 space-y-1">
-                <div className="flex items-center justify-between">
-                  <label className="text-xs font-bold text-slate-700 uppercase tracking-tight flex items-center gap-1.5">
-                    Client <span className="text-red-500 font-bold">*</span>
-                  </label>
+            {/* 1. Client Card */}
+            <div className="bg-white p-3 rounded-xl border border-slate-200 shadow-2xs space-y-2">
+              <div className="flex items-center justify-between">
+                <label className="text-xs font-bold text-slate-700 uppercase tracking-tight flex items-center gap-1">
+                  Client <span className="text-red-500 font-bold">*</span>
+                </label>
+                {selectedCustomer && (
                   <div className="flex items-center gap-2">
-                    {selectedCustomer?.hidePricesOnDeliveryNote && (
-                      <span className="text-[10px] font-bold text-amber-700 bg-amber-50 border border-amber-300 px-2 py-0.5 rounded">
-                        Prix masqués sur B.L. (Exempt / Bon de retrait)
-                      </span>
+                    {selectedCustomer.city && (
+                      <span className="text-slate-500 font-semibold text-xs hidden sm:inline">{selectedCustomer.city}</span>
                     )}
-                    {selectedCustomer && (
-                      <span className="text-[11px] font-semibold text-slate-500">
-                        {selectedCustomer.city ? `${selectedCustomer.city}` : ''}
-                      </span>
-                    )}
-                  </div>
-                </div>
-
-                <div className="flex items-center gap-2">
-                  {/* Direct Code Input */}
-                  <input
-                    type="text"
-                    placeholder="Code"
-                    value={clientCodeInput}
-                    onChange={(e) => handleClientCodeChange(e.target.value)}
-                    className="w-20 px-2.5 py-1.5 bg-white border border-slate-300 rounded text-xs font-mono font-bold text-slate-900 text-center focus:ring-2 focus:ring-blue-500 focus:outline-none"
-                    title="Saisir directement le code client (ex: C001, 1...)"
-                  />
-
-                  {/* Customer Display Box */}
-                  <div 
-                    onClick={() => setIsClientModalOpen(true)}
-                    className="flex-1 px-3 py-1.5 bg-white border border-slate-300 hover:border-blue-400 rounded text-xs font-bold text-slate-900 flex items-center justify-between cursor-pointer transition-colors shadow-2xs"
-                  >
-                    <span className="truncate">
-                      {selectedCustomer ? `${selectedCustomer.name}` : 'Cliquez pour choisir un client...'}
-                    </span>
-                    <Search className="h-3.5 w-3.5 text-slate-400 shrink-0 ml-2" />
-                  </div>
-
-                  {/* Open Client Modal Button */}
-                  <button
-                    type="button"
-                    onClick={() => setIsClientModalOpen(true)}
-                    className="px-3 py-1.5 bg-blue-700 hover:bg-blue-800 text-white font-bold text-xs rounded shadow-xs flex items-center gap-1 cursor-pointer transition-colors shrink-0"
-                  >
-                    <Search className="h-3.5 w-3.5" />
-                    Choix Client
-                  </button>
-
-                  {/* Open Profile Modal Button */}
-                  {selectedCustomer && (
-                    <button
-                      type="button"
-                      onClick={() => setIsCustomerProfileOpen(true)}
-                      className="px-2.5 py-1.5 bg-indigo-50 hover:bg-indigo-100 text-indigo-700 border border-indigo-200 font-bold text-xs rounded shadow-2xs flex items-center gap-1 cursor-pointer transition-colors shrink-0"
-                      title="Consulter l'historique, dettes antérieures et règlements de ce client"
-                    >
-                      <FileText className="h-3.5 w-3.5 text-indigo-600" />
-                      Fiche & Règl.
-                    </button>
-                  )}
-                </div>
-              </div>
-
-              {/* Reste à payer / Solde & Plafond Display Card */}
-              <div 
-                onClick={() => {
-                  if (selectedCustomer) setIsCustomerProfileOpen(true);
-                }}
-                className={`lg:col-span-4 p-2.5 rounded-xl border transition-all ${
-                  selectedCustomer ? 'cursor-pointer hover:shadow-md' : ''
-                } ${
-                  (selectedCustomer?.balance || 0) < 0 
-                    ? 'bg-red-50/70 border-red-200' 
-                    : (selectedCustomer?.balance || 0) > 0 
-                    ? 'bg-emerald-50/70 border-emerald-200' 
-                    : 'bg-slate-50 border-slate-200'
-                }`}
-                title={selectedCustomer ? 'Cliquer pour ouvrir la fiche client et enregistrer un versement' : ''}
-              >
-                <div className="flex items-center justify-between">
-                  <div>
-                    <span className="text-[11px] font-bold text-slate-700 block uppercase tracking-tight">
-                      Solde Client :
-                    </span>
-                    <span className="text-[10px] text-slate-500">
-                      {(selectedCustomer?.balance || 0) < 0 ? 'Dette globale en cours' : (selectedCustomer?.balance || 0) > 0 ? 'Avance client' : 'Solde nul (À jour)'}
-                    </span>
-                  </div>
-                  <div className="text-right">
-                    <span className={`text-sm font-mono font-black ${
-                      (selectedCustomer?.balance || 0) < 0 ? 'text-red-600' : (selectedCustomer?.balance || 0) > 0 ? 'text-emerald-700' : 'text-slate-900'
+                    <div className={`px-3 py-1 rounded-lg font-mono font-black text-xs sm:text-sm shadow-xs border flex items-center gap-1.5 transition-all ${
+                      (selectedCustomer.balance || 0) < 0 
+                        ? 'bg-red-50 text-red-700 border-red-200 ring-1 ring-red-400/40' 
+                        : (selectedCustomer.balance || 0) > 0 
+                        ? 'bg-emerald-50 text-emerald-800 border-emerald-200 ring-1 ring-emerald-400/40' 
+                        : 'bg-slate-100 text-slate-700 border-slate-200'
                     }`}>
-                      {formatCurrency(selectedCustomer?.balance || 0)}
-                    </span>
-                  </div>
-                </div>
-
-                {/* Sub-row: Dette Initiale + Plafond de crédit */}
-                {selectedCustomer && ((selectedCustomer.initialDebt && selectedCustomer.initialDebt > 0) || (selectedCustomer.creditLimit && selectedCustomer.creditLimit > 0)) && (
-                  <div className="mt-1.5 pt-1.5 border-t border-slate-200/80 flex flex-wrap items-center justify-between gap-1 text-[10px]">
-                    {selectedCustomer.initialDebt && selectedCustomer.initialDebt > 0 ? (
-                      <span className="text-amber-900 bg-amber-100/80 px-1.5 py-0.5 rounded font-mono font-bold">
-                        Dette Init.: {formatCurrency(selectedCustomer.initialDebt)}
-                      </span>
-                    ) : <span />}
-                    {selectedCustomer.creditLimit && selectedCustomer.creditLimit > 0 && (
-                      <span className={`px-1.5 py-0.5 rounded font-mono font-bold flex items-center gap-1 ${
-                        Math.abs(Math.min(0, selectedCustomer.balance || 0)) > selectedCustomer.creditLimit
-                          ? 'bg-red-200 text-red-900'
-                          : 'bg-blue-100 text-blue-900'
-                      }`}>
-                        {Math.abs(Math.min(0, selectedCustomer.balance || 0)) > selectedCustomer.creditLimit && (
-                          <AlertTriangle className="h-3 w-3 text-red-600 shrink-0" />
-                        )}
-                        Plafond: {formatCurrency(selectedCustomer.creditLimit)}
-                      </span>
-                    )}
+                      <span className="text-[10px] font-sans uppercase font-bold text-slate-500">Solde :</span>
+                      <span className="tracking-tight">{formatCurrency(selectedCustomer.balance || 0)}</span>
+                    </div>
                   </div>
                 )}
               </div>
 
-            </div>
+              <div className="flex items-center gap-1.5">
+                <input
+                  type="text"
+                  placeholder="Code"
+                  value={clientCodeInput}
+                  onChange={(e) => handleClientCodeChange(e.target.value)}
+                  className="w-16 px-2 py-1.5 bg-white border border-slate-300 rounded text-xs font-mono font-bold text-slate-900 text-center focus:ring-1 focus:ring-blue-500 focus:outline-none"
+                  title="Code client"
+                />
 
-            {/* Bottom Row: Type B.L. (H.Taxes vs TTC) */}
-            <div className="flex items-center justify-between pt-1 border-t border-slate-100">
-              
-              <div className="flex items-center gap-3">
-                <span className="text-xs font-bold text-slate-700">
-                  Type B.L. :
-                </span>
-                <div className="flex items-center gap-4">
-                  <label className="flex items-center gap-2 text-xs font-medium text-slate-700 cursor-pointer">
-                    <input
-                      type="radio"
-                      name="taxType"
-                      value="HT"
-                      checked={taxType === 'HT'}
-                      onChange={() => setTaxType('HT')}
-                      className="text-blue-600 focus:ring-blue-500 cursor-pointer"
-                    />
-                    <span>H.Taxes</span>
-                  </label>
-                  <label className="flex items-center gap-2 text-xs font-medium text-slate-700 cursor-pointer">
-                    <input
-                      type="radio"
-                      name="taxType"
-                      value="TTC"
-                      checked={taxType === 'TTC'}
-                      onChange={() => setTaxType('TTC')}
-                      className="text-blue-600 focus:ring-blue-500 cursor-pointer"
-                    />
-                    <span>TTC</span>
-                  </label>
-                </div>
-              </div>
-
-            </div>
-
-          </div>
-
-          {/* ORDER LINKING BANNER / CARD */}
-          {currentLinkedOrder ? (
-            <div className="bg-gradient-to-r from-blue-50 via-indigo-50/50 to-blue-50 border-2 border-blue-300 rounded-xl p-3.5 shadow-xs space-y-3 animate-in fade-in duration-200">
-              <div className="flex flex-wrap items-center justify-between gap-2.5">
-                <div className="flex items-center gap-2.5">
-                  <div className="p-2 bg-blue-600 text-white rounded-lg shadow-xs">
-                    <PackageCheck className="h-5 w-5" />
-                  </div>
-                  <div>
-                    <div className="flex flex-wrap items-center gap-2">
-                      <span className="text-xs font-bold text-slate-800">
-                        Commande Client Rattachée :
-                      </span>
-                      <span className="font-mono font-extrabold text-sm text-blue-900 bg-white px-2.5 py-0.5 rounded-md border border-blue-400 shadow-2xs">
-                        {currentLinkedOrder.number}
-                      </span>
-                      <span className={`text-[10px] font-bold px-2.5 py-0.5 rounded-full ${
-                        currentLinkedOrder.status === 'confirmed' ? 'bg-blue-100 text-blue-800 border border-blue-300' :
-                        currentLinkedOrder.status === 'delivered' ? 'bg-emerald-100 text-emerald-800 border border-emerald-300' :
-                        'bg-slate-100 text-slate-700'
-                      }`}>
-                        {currentLinkedOrder.status === 'confirmed' ? '✓ Confirmée' : currentLinkedOrder.status === 'delivered' ? '✓ Livrée' : 'Brouillon'}
-                      </span>
-                      <span className="text-xs text-slate-500 font-medium hidden sm:inline">
-                        Date: {formatDate(currentLinkedOrder.date)}
-                      </span>
-                    </div>
-                    <p className="text-[11px] text-slate-600 mt-0.5">
-                      Camion, Chauffeur et Tarifs négociés automatiquement synchronisés. 
-                      Renseignez le <strong>PTC (Poids Brut)</strong> sur le pont bascule pour calculer le montant final. Vous pouvez modifier n&apos;importe quelle information.
-                    </p>
-                  </div>
-                </div>
-
-                <div className="flex items-center gap-2 self-start sm:self-center">
-                  {customerOrders.length > 1 && (
-                    <div className="flex items-center gap-1.5">
-                      <span className="text-[11px] font-bold text-slate-600">Changer :</span>
-                      <select
-                        value={linkedOrderId}
-                        onChange={(e) => {
-                          const ord = customerOrders.find(o => o.id === e.target.value);
-                          if (ord) applyOrderToDelivery(ord);
-                        }}
-                        className="text-xs bg-white border border-blue-400 text-blue-950 font-bold px-2.5 py-1 rounded-lg focus:ring-2 focus:ring-blue-500 focus:outline-none cursor-pointer shadow-2xs"
-                      >
-                        {customerOrders.map(o => (
-                          <option key={o.id} value={o.id}>
-                            {o.number} ({formatDate(o.date)})
-                          </option>
-                        ))}
-                      </select>
-                    </div>
-                  )}
-                  <button
-                    type="button"
-                    onClick={() => {
-                      setLinkedOrderId('');
-                      setLinkedOrderItemId('');
-                      setIsAutoPrice(true);
-                    }}
-                    className="text-xs text-slate-600 hover:text-red-700 bg-white hover:bg-red-50 border border-slate-300 hover:border-red-300 px-2.5 py-1 rounded-lg font-semibold flex items-center gap-1 transition-colors cursor-pointer shadow-2xs"
-                    title="Dissocier la commande pour créer un BL libre"
-                  >
-                    <Unlink className="h-3.5 w-3.5 text-slate-400 group-hover:text-red-500" />
-                    Dissocier
-                  </button>
-                </div>
-              </div>
-
-              {/* Multi-item selector pills if order has items */}
-              {currentOrderItems.length > 0 && (
-                <div className="pt-2 border-t border-blue-200/80 flex flex-wrap items-center gap-2">
-                  <span className="text-[11px] font-bold text-slate-700 uppercase tracking-tight">
-                    Articles de la commande :
+                <div 
+                  onClick={() => setIsClientModalOpen(true)}
+                  className="flex-1 px-2.5 py-1.5 bg-white border border-slate-300 hover:border-blue-400 rounded text-xs font-bold text-slate-900 flex items-center justify-between cursor-pointer transition-colors shadow-2xs min-w-0"
+                >
+                  <span className="truncate">
+                    {selectedCustomer ? selectedCustomer.name : 'Choisir un client...'}
                   </span>
-                  <div className="flex flex-wrap items-center gap-1.5">
-                    {currentOrderItems.map(item => {
-                      const prod = products.find(p => p.id === item.productId);
-                      const isSelected = item.productId === productId;
-                      return (
-                        <button
-                          key={item.id}
-                          type="button"
-                          onClick={() => {
-                            setLinkedOrderItemId(item.id);
-                            setProductId(item.productId);
-                            setUnitPrice(item.priceHT);
-                            setIsAutoPrice(false);
-                            setFormError(null);
-                          }}
-                          className={`text-xs px-3 py-1.5 rounded-lg font-bold border transition-all flex items-center gap-1.5 cursor-pointer ${
-                            isSelected
-                              ? 'bg-blue-700 text-white border-blue-800 shadow-sm ring-2 ring-blue-400'
-                              : 'bg-white hover:bg-blue-50 text-slate-800 border-slate-300 hover:border-blue-400'
-                          }`}
-                        >
-                          {isSelected && <Check className="h-3.5 w-3.5 text-white" />}
-                          <span>{prod?.name || 'Produit'}</span>
-                          <span className={`font-mono text-[11px] ${isSelected ? 'text-blue-100 font-extrabold' : 'text-slate-500'}`}>
-                            ({item.quantity} T @ {formatCurrency(item.priceHT)} HT)
-                          </span>
-                        </button>
-                      );
-                    })}
-                  </div>
+                  <Search className="h-3.5 w-3.5 text-slate-400 shrink-0 ml-1" />
                 </div>
-              )}
-            </div>
-          ) : (
-            customerOrders.length > 0 && (
-              <div className="bg-amber-50/80 border border-amber-200 rounded-xl p-3 flex flex-wrap items-center justify-between gap-2 text-xs">
-                <div className="flex items-center gap-2">
-                  <AlertCircle className="h-4 w-4 text-amber-600 shrink-0" />
-                  <span className="text-amber-900 font-medium">
-                    Ce client a <strong>{customerOrders.length} commande(s)</strong> enregistrée(s).
-                  </span>
-                </div>
-                <div className="flex items-center gap-1.5">
-                  {customerOrders.map(o => (
-                    <button
-                      key={o.id}
-                      type="button"
-                      onClick={() => applyOrderToDelivery(o)}
-                      className="bg-white hover:bg-amber-100 text-amber-900 border border-amber-300 px-2.5 py-1 rounded-lg font-bold cursor-pointer transition-colors shadow-2xs flex items-center gap-1"
-                    >
-                      <PackageCheck className="h-3.5 w-3.5 text-amber-600" />
-                      Lier {o.number}
-                    </button>
-                  ))}
-                </div>
-              </div>
-            )
-          )}
 
-          {/* Toast / Alert banner on order sync */}
-          {orderSyncToast && (
-            <div className="bg-emerald-600 text-white text-xs font-bold px-4 py-2 rounded-lg shadow-sm flex items-center justify-between animate-in fade-in slide-in-from-top-2 duration-300">
-              <div className="flex items-center gap-2">
-                <CheckCircle2 className="h-4 w-4 shrink-0" />
-                <span>{orderSyncToast.message}</span>
-              </div>
-              <button 
-                type="button" 
-                onClick={() => setOrderSyncToast(null)}
-                className="text-emerald-100 hover:text-white cursor-pointer ml-4"
-              >
-                <X className="h-4 w-4" />
-              </button>
-            </div>
-          )}
-
-          {/* SECTION 2: Détail B.Livraison (Product Lines Table & Right Action Buttons) */}
-          <div className="bg-white rounded-xl border border-slate-300 shadow-xs overflow-hidden">
-            
-            {/* Table Header Banner */}
-            <div className="bg-blue-600 text-white px-4 py-1.5 font-bold text-xs uppercase tracking-wider flex items-center justify-between">
-              <span>Détail B.Livraison</span>
-              <span className="text-[11px] font-normal text-blue-100">
-                1 Ligne d&apos;agrégat par bon
-              </span>
-            </div>
-
-            {/* Table + Action Buttons Layout */}
-            <div className="flex flex-col lg:flex-row">
-              
-              {/* Product Table */}
-              <div className="flex-1 overflow-x-auto">
-                <table className="w-full text-xs text-left border-collapse">
-                  <thead className="bg-slate-800 text-white font-semibold select-none">
-                    <tr>
-                      <th className="py-2 px-3 border-r border-slate-700 w-28">Code</th>
-                      <th className="py-2 px-3 border-r border-slate-700">Désignation</th>
-                      <th className="py-2 px-3 border-r border-slate-700 w-28 text-right">Prix Unitaire</th>
-                      <th className="py-2 px-3 border-r border-slate-700 w-24 text-right bg-blue-900/70">Qté (T)</th>
-                      <th className="py-2 px-3 border-r border-slate-700 w-32 text-right">Mnt H.T.</th>
-                      <th className="py-2 px-3 w-32 text-right">Mnt TTC</th>
-                    </tr>
-                  </thead>
-                  <tbody className="divide-y divide-slate-200">
-                    {/* Active Product Row */}
-                    <tr className="bg-[#ecfccb] text-slate-950 font-medium">
-                      
-                      {/* Code */}
-                      <td className="py-2 px-3 border-r border-slate-200 font-mono font-bold">
-                        {selectedProduct ? selectedProduct.code : '-'}
-                      </td>
-
-                      {/* Designation */}
-                      <td className="py-2 px-3 border-r border-slate-200 font-bold">
-                        <div className="flex items-center justify-between gap-2">
-                          <span>{selectedProduct ? selectedProduct.name : 'Sélectionnez un produit avec le bouton Ajouter +'}</span>
-                          <button
-                            type="button"
-                            onClick={() => setIsProductModalOpen(true)}
-                            className="text-[10px] bg-white hover:bg-slate-100 text-blue-700 border border-blue-300 px-1.5 py-0.5 rounded cursor-pointer"
-                          >
-                            Changer
-                          </button>
-                        </div>
-                      </td>
-
-                      {/* Unit Price (Editable) */}
-                      <td className="py-1 px-2 border-r border-slate-200 text-right">
-                        <div className="relative flex items-center justify-end">
-                          <input
-                            type="number"
-                            step="0.01"
-                            value={unitPrice}
-                            onChange={(e) => {
-                              setIsAutoPrice(false);
-                              setUnitPrice(e.target.value === '' ? '' : Number(e.target.value));
-                            }}
-                            className="w-24 px-1.5 py-1 text-right font-mono font-bold bg-white border border-slate-300 rounded focus:ring-1 focus:ring-blue-500 focus:outline-none"
-                          />
-                        </div>
-                      </td>
-
-                      {/* Quantity (Net Weight in Tonnes) */}
-                      <td className="py-2 px-3 border-r border-slate-200 text-right font-mono font-extrabold text-blue-900 text-sm bg-lime-100">
-                        {netWeight.toFixed(2).replace('.', ',')}
-                      </td>
-
-                      {/* Mnt H.T. */}
-                      <td className="py-2 px-3 border-r border-slate-200 text-right font-mono font-bold text-slate-800">
-                        {formatCurrency(totalHT)}
-                      </td>
-
-                      {/* Mnt TTC */}
-                      <td className="py-2 px-3 text-right font-mono font-bold text-slate-950">
-                        {formatCurrency(totalTTC)}
-                      </td>
-
-                    </tr>
-                  </tbody>
-
-                  {/* Table Footer: Total B.L. */}
-                  <tfoot>
-                    <tr className="bg-slate-100 border-t-2 border-slate-300 font-bold text-slate-800">
-                      <td colSpan={3} className="py-2 px-3 text-right uppercase tracking-wider text-xs">
-                        Total B.L. :
-                      </td>
-                      <td className="py-2 px-3 text-right font-mono text-blue-800">
-                        {netWeight.toFixed(2).replace('.', ',')} T
-                      </td>
-                      <td className="py-2 px-3 text-right font-mono text-slate-900">
-                        {formatCurrency(totalHT)}
-                      </td>
-                      <td className="py-2 px-3 text-right font-mono text-blue-700 text-sm">
-                        {formatCurrency(totalTTC)}
-                      </td>
-                    </tr>
-                  </tfoot>
-                </table>
-              </div>
-
-              {/* Side Action Buttons: Valider / Ajouter / Annuler */}
-              <div className="bg-slate-100 p-2.5 border-t lg:border-t-0 lg:border-l border-slate-300 flex flex-row lg:flex-col gap-2 justify-center lg:w-36 shrink-0">
-                
                 <button
                   type="button"
-                  onClick={() => handleSave(false)}
-                  disabled={isSaving}
-                  className="flex-1 lg:flex-none px-3 py-2 bg-blue-700 hover:bg-blue-800 text-white font-bold text-xs rounded-lg shadow-sm flex items-center justify-center gap-1.5 cursor-pointer transition-colors disabled:opacity-50"
+                  onClick={() => setIsClientModalOpen(true)}
+                  className="px-2.5 py-1.5 bg-blue-700 hover:bg-blue-800 text-white font-bold text-xs rounded shadow-2xs flex items-center gap-1 cursor-pointer transition-colors shrink-0"
                 >
-                  <Check className="h-4 w-4" />
-                  Valider
+                  <Search className="h-3 w-3" />
+                  <span>Choix</span>
                 </button>
 
+                {selectedCustomer && (
+                  <button
+                    type="button"
+                    onClick={() => setIsCustomerProfileOpen(true)}
+                    className="px-2 py-1.5 bg-indigo-50 hover:bg-indigo-100 text-indigo-700 border border-indigo-200 font-bold text-xs rounded shadow-2xs flex items-center gap-1 cursor-pointer transition-colors shrink-0"
+                    title="Fiche & Règlements du client"
+                  >
+                    <FileText className="h-3 w-3" />
+                    <span>Fiche</span>
+                  </button>
+                )}
+              </div>
+            </div>
+
+            {/* 2. Produit (Agrégat) Card */}
+            <div className="bg-white p-3 rounded-xl border border-slate-200 shadow-2xs space-y-2">
+              <div className="flex items-center justify-between">
+                <span className="text-xs font-bold text-slate-700 uppercase tracking-tight flex items-center gap-1">
+                  Produit / Agrégat <span className="text-red-500 font-bold">*</span>
+                </span>
                 <button
                   type="button"
                   onClick={() => setIsProductModalOpen(true)}
-                  className="flex-1 lg:flex-none px-3 py-2 bg-white hover:bg-slate-50 text-slate-800 border border-slate-300 font-bold text-xs rounded-lg shadow-2xs flex items-center justify-center gap-1.5 cursor-pointer transition-colors"
+                  className="text-[11px] text-blue-700 hover:text-blue-800 font-bold flex items-center gap-1 cursor-pointer"
                 >
-                  <Plus className="h-4 w-4 text-emerald-600" />
-                  Ajouter +
+                  <Plus className="h-3 w-3 text-blue-600" />
+                  <span>{selectedProduct ? 'Changer de produit' : 'Sélectionner un produit'}</span>
                 </button>
-
-                <button
-                  type="button"
-                  onClick={() => {
-                    setProductId('');
-                    setUnitPrice('');
-                  }}
-                  className="flex-1 lg:flex-none px-3 py-2 bg-white hover:bg-slate-50 text-red-700 border border-slate-300 font-bold text-xs rounded-lg shadow-2xs flex items-center justify-center gap-1.5 cursor-pointer transition-colors"
-                >
-                  <X className="h-4 w-4 text-red-500" />
-                  Annuler
-                </button>
-
               </div>
 
+              <div className="flex items-center justify-between gap-2 p-2 bg-slate-50 border border-slate-200 rounded-lg">
+                <div className="min-w-0 flex-1">
+                  <div className="flex items-center gap-1.5">
+                    <span className="font-mono font-bold text-xs text-blue-900 bg-white px-1.5 py-0.5 rounded border border-blue-200">
+                      {selectedProduct ? selectedProduct.code : '-'}
+                    </span>
+                    <span className="font-bold text-xs text-slate-900 truncate">
+                      {selectedProduct ? selectedProduct.name : 'Aucun produit sélectionné'}
+                    </span>
+                  </div>
+                </div>
+
+                <div className="flex items-center gap-2 shrink-0">
+                  <div className="text-right">
+                    <span className="text-[10px] text-slate-500 font-bold block">P.U. HT</span>
+                    <input
+                      type="number"
+                      step="0.01"
+                      value={unitPrice}
+                      onChange={(e) => {
+                        setIsAutoPrice(false);
+                        setUnitPrice(e.target.value === '' ? '' : Number(e.target.value));
+                      }}
+                      className="w-20 px-1.5 py-0.5 text-right font-mono font-bold text-xs bg-white border border-slate-300 rounded focus:ring-1 focus:ring-blue-500 focus:outline-none"
+                    />
+                  </div>
+                </div>
+              </div>
+
+              {/* Product Pricing Summary Bar */}
+              <div className="grid grid-cols-3 gap-2 text-center pt-1 border-t border-slate-100">
+                <div className="bg-lime-50 border border-lime-200 p-1.5 rounded-lg">
+                  <span className="text-[10px] text-lime-900 font-bold block uppercase">Quantité (Net)</span>
+                  <span className="font-mono font-extrabold text-xs text-lime-950">
+                    {netWeight.toFixed(2).replace('.', ',')} T
+                  </span>
+                </div>
+                <div className="bg-slate-50 border border-slate-200 p-1.5 rounded-lg">
+                  <span className="text-[10px] text-slate-600 font-bold block uppercase">Montant HT</span>
+                  <span className="font-mono font-bold text-xs text-slate-900">
+                    {formatCurrency(totalHT)}
+                  </span>
+                </div>
+                <div className="bg-blue-50 border border-blue-200 p-1.5 rounded-lg">
+                  <span className="text-[10px] text-blue-800 font-bold block uppercase">Montant TTC</span>
+                  <span className="font-mono font-extrabold text-xs text-blue-950">
+                    {formatCurrency(totalTTC)}
+                  </span>
+                </div>
+              </div>
+            </div>
+
+            {/* 3. Mode de Règlement & Net à Payer */}
+            <div className="bg-white p-3 rounded-xl border border-slate-200 shadow-2xs flex flex-wrap items-center justify-between gap-3">
+              <div className="flex items-center gap-2">
+                <span className="text-xs font-bold text-slate-700">Règlement :</span>
+                <select
+                  value={paymentMode}
+                  onChange={(e) => setPaymentMode(e.target.value)}
+                  className="px-2.5 py-1 bg-white border border-slate-300 rounded text-xs font-semibold text-slate-800 focus:ring-1 focus:ring-blue-500 cursor-pointer"
+                >
+                  <option value="Espèces">Espèces</option>
+                  <option value="Terme">Terme (Crédit)</option>
+                  <option value="Avances">Avances</option>
+                  <option value="Chèque">Chèque</option>
+                  <option value="Virement">Virement</option>
+                </select>
+              </div>
+
+              <div className="flex items-center gap-2">
+                <span className="text-xs font-bold text-slate-800 uppercase tracking-tight">
+                  Net à Payer :
+                </span>
+                <span className="text-base font-mono font-black text-blue-900 bg-blue-50 px-3 py-0.5 rounded-lg border border-blue-300">
+                  {formatCurrency(netToPay)}
+                </span>
+              </div>
             </div>
 
           </div>
 
-          {/* SECTION 3: Bottom Payment, Transport & Weights Area */}
-          <div className="bg-white p-4 rounded-xl border border-slate-200 shadow-xs space-y-4">
+          {/* RIGHT COLUMN: Camion + Chauffeur + Pont Bascule Weigher (6 cols) */}
+          <div className="lg:col-span-6 space-y-3">
             
-            <div className="grid grid-cols-1 lg:grid-cols-12 gap-5">
-              
-              {/* Left Column: Mode de règlement, Remise, Net à payer (4 cols) */}
-              <div className="lg:col-span-4 space-y-3 bg-slate-50 p-3.5 rounded-xl border border-slate-200">
-                
-                {/* Mode règlement */}
-                <div className="flex items-center justify-between gap-2">
-                  <label className="text-xs font-bold text-slate-700 whitespace-nowrap">
-                    Mode règlement :
-                  </label>
-                  <select
-                    value={paymentMode}
-                    onChange={(e) => setPaymentMode(e.target.value)}
-                    className="flex-1 max-w-[160px] px-2.5 py-1.5 bg-white border border-slate-300 rounded text-xs font-semibold text-slate-800 focus:ring-2 focus:ring-blue-500 focus:outline-none cursor-pointer"
-                  >
-                    <option value="Espèces">Espèces</option>
-                    <option value="Terme">Terme (Crédit)</option>
-                    <option value="Avances">Avances</option>
-                    <option value="Chèque">Chèque</option>
-                    <option value="Virement">Virement</option>
-                  </select>
-                </div>
-
-                {paymentMode === 'Terme' && (
-                  <div className="p-2.5 bg-amber-50/90 border border-amber-200 rounded-lg text-[11px] text-amber-900 leading-tight space-y-1">
-                    <div className="font-bold flex items-center gap-1.5 text-amber-900">
-                      <CreditCard className="h-3.5 w-3.5 text-amber-700" />
-                      Paiement à terme (Vente à crédit)
-                    </div>
-                    <p className="text-[10px] text-amber-800">
-                      Le montant de {formatCurrency(netToPay)} sera automatiquement ajouté à la dette du client.
-                    </p>
-                  </div>
-                )}
-
-                {/* Remise */}
-                <div className="flex items-center justify-between gap-2">
-                  <label className="text-xs font-bold text-slate-700 whitespace-nowrap">
-                    Remise :
-                  </label>
-                  <div className="flex items-center gap-1">
-                    <input
-                      type="number"
-                      step="0.01"
-                      placeholder="0.00"
-                      value={discount}
-                      onChange={(e) => setDiscount(e.target.value === '' ? '' : Number(e.target.value))}
-                      className="w-32 px-2.5 py-1 text-xs font-mono font-bold text-right bg-white border border-slate-300 rounded focus:ring-2 focus:ring-blue-500 focus:outline-none"
-                    />
-                    <span className="text-xs text-slate-500 font-semibold">DA</span>
-                  </div>
-                </div>
-
-                {/* Net à payer Display */}
-                <div className="pt-2 border-t border-slate-200 flex items-center justify-between">
+            {/* 1. Camion Selection Card */}
+            <div className="bg-white p-3 rounded-xl border border-slate-200 shadow-2xs space-y-2">
+              <div className="flex items-center justify-between">
+                <div className="flex items-center gap-1.5">
+                  <TruckIcon className="h-4 w-4 text-blue-700" />
                   <span className="text-xs font-bold text-slate-800 uppercase tracking-tight">
-                    Net à payer :
+                    Camion <span className="text-red-500 font-bold">*</span>
                   </span>
-                  <div className="text-base font-mono font-extrabold text-blue-800 bg-blue-50 px-3 py-1 rounded border border-blue-200">
-                    {formatCurrency(netToPay)}
-                  </div>
-                </div>
-
-              </div>
-
-              {/* Middle & Right Column: Transport, Camion (1 SEUL CHOIX), Chauffeur, Tare, PTC (8 cols) */}
-              <div className="lg:col-span-8 space-y-3">
-                
-                {/* UNIFIED TRUCK SELECTION CARD (ENFORCE SINGLE CHOICE) */}
-                <div className="space-y-2.5 bg-slate-50/90 p-3.5 rounded-xl border border-slate-200 shadow-2xs">
-                  <div className="flex flex-wrap items-center justify-between gap-2">
-                    <div className="flex items-center gap-2">
-                      <TruckIcon className="h-4 w-4 text-blue-700" />
-                      <span className="text-xs font-bold text-slate-800 uppercase tracking-tight">
-                        Camion de Transport <span className="text-red-500 font-bold">*</span>
-                      </span>
-                      <span className="text-[10px] text-slate-500 font-medium">
-                        (Liaison Pont-Bascule)
-                      </span>
-                      {(isFavoriteTruckSelected || selectedTruck?.isFavorite) && (
-                        <span className="text-[10px] bg-amber-100 text-amber-900 border border-amber-300 font-bold px-2 py-0.5 rounded-full flex items-center gap-1 shadow-2xs">
-                          <Star className="h-2.5 w-2.5 fill-amber-500 text-amber-500" />
-                          Camion Favori
-                        </span>
-                      )}
-                    </div>
-
-                    {/* Two Modal Selection Buttons (Mutually Exclusive) */}
-                    <div className="flex items-center gap-2">
-                      <button
-                        type="button"
-                        onClick={() => setIsTruckModalOpen(true)}
-                        className="text-xs bg-white hover:bg-slate-100 text-blue-800 border border-blue-300 px-2.5 py-1 rounded-lg font-bold flex items-center gap-1.5 transition-colors cursor-pointer shadow-2xs"
-                      >
-                        <Search className="h-3.5 w-3.5 text-blue-600" />
-                        Tous les camions
-                      </button>
-
-                      <button
-                        type="button"
-                        onClick={() => setIsFavoriteTruckModalOpen(true)}
-                        className="text-xs bg-amber-50 hover:bg-amber-100 text-amber-900 border border-amber-300 px-2.5 py-1 rounded-lg font-bold flex items-center gap-1.5 transition-colors cursor-pointer shadow-2xs"
-                        title="Ouvrir les camions favoris et habituels"
-                      >
-                        <Star className="h-3.5 w-3.5 fill-amber-500 text-amber-500" />
-                        Camions favoris {clientFavoriteTrucksCount > 0 ? `(${clientFavoriteTrucksCount})` : ''}
-                      </button>
-                    </div>
-                  </div>
-
-                  {/* Single Active Truck Box */}
-                  <div 
-                    onClick={() => setIsTruckModalOpen(true)}
-                    className={`w-full p-3 bg-white border rounded-xl cursor-pointer flex flex-col sm:flex-row sm:items-center justify-between gap-3 transition-all ${
-                      selectedTruck 
-                        ? isFavoriteTruckSelected 
-                          ? 'border-amber-400 bg-amber-50/20 shadow-xs' 
-                          : 'border-blue-400 bg-blue-50/20 shadow-xs'
-                        : 'border-slate-300 hover:border-slate-400 border-dashed'
-                    }`}
-                  >
-                    <div className="flex items-center gap-3.5">
-                      {/* Truck Thumbnail Photo or Icon */}
-                      <div className={`w-14 h-12 rounded-lg overflow-hidden shrink-0 flex items-center justify-center border ${
-                        selectedTruck 
-                          ? 'border-blue-300 bg-slate-900' 
-                          : 'border-slate-200 bg-slate-100 text-slate-400'
-                      }`}>
-                        {selectedTruck?.imageUrl ? (
-                          <img 
-                            src={selectedTruck.imageUrl} 
-                            alt={selectedTruck.matricule} 
-                            className="w-full h-full object-cover" 
-                          />
-                        ) : selectedTruck ? (
-                          <TruckIcon className="h-7 w-7 text-amber-400" />
-                        ) : (
-                          <TruckIcon className="h-6 w-6 text-slate-400" />
-                        )}
-                      </div>
-
-                      <div className="space-y-1">
-                        {selectedTruck ? (
-                          <>
-                            <div className="flex flex-wrap items-center gap-2">
-                              <span className="font-mono font-black text-sm text-slate-950 tracking-wider">
-                                {selectedTruck.matricule}
-                              </span>
-                              {selectedTruck.brand && (
-                                <span className="text-xs text-slate-500 font-medium">
-                                  • {selectedTruck.brand}
-                                </span>
-                              )}
-                              {selectedTruck.allowDiscount && (
-                                <span className="text-[10px] bg-emerald-100 text-emerald-800 border border-emerald-300 font-bold px-2 py-0.5 rounded-full">
-                                  Remise accordée
-                                </span>
-                              )}
-                            </div>
-
-                            {/* Detailed Specs Row: Tare, Mn Tonne, Volume, Phone */}
-                            <div className="flex flex-wrap items-center gap-x-3 gap-y-1 text-xs">
-                              <span className="font-mono font-bold text-blue-900 bg-blue-100/70 px-2 py-0.5 rounded border border-blue-200">
-                                Tare fixe: {selectedTruck.tare.toFixed(2).replace('.', ',')} T
-                              </span>
-                              {selectedTruck.mnTonne !== undefined && (
-                                <span className="font-mono text-slate-700 bg-slate-100 px-2 py-0.5 rounded border border-slate-200">
-                                  Mn T: {Number(selectedTruck.mnTonne).toFixed(2).replace('.', ',')} T
-                                </span>
-                              )}
-                              {selectedTruck.volumeM3 ? (
-                                <span className="font-mono font-semibold text-amber-900 bg-amber-100/60 px-2 py-0.5 rounded border border-amber-200">
-                                  Vol: {selectedTruck.volumeM3} m³
-                                </span>
-                              ) : null}
-                              {selectedTruck.driverPhone && (
-                                <span className="text-slate-600 font-mono text-[11px] flex items-center gap-1">
-                                  <Phone className="h-3 w-3 text-slate-400" />
-                                  {selectedTruck.driverPhone}
-                                </span>
-                              )}
-                            </div>
-                          </>
-                        ) : (
-                          <div className="text-xs text-slate-400 font-medium italic">
-                            Aucun camion sélectionné — Cliquez ici ou utilisez l&apos;un des boutons ci-dessus
-                          </div>
-                        )}
-                      </div>
-                    </div>
-
-                    <div className="flex items-center gap-2 shrink-0 self-end sm:self-center">
-                      {selectedTruck && (
-                        <button
-                          type="button"
-                          onClick={(e) => {
-                            e.stopPropagation();
-                            setTruckId('');
-                            setTare('');
-                            setIsFavoriteTruckSelected(false);
-                          }}
-                          className="text-xs text-red-600 hover:text-red-800 bg-red-50 hover:bg-red-100 border border-red-200 px-2 py-1 rounded font-semibold transition-colors cursor-pointer"
-                          title="Désélectionner le camion"
-                        >
-                          Effacer
-                        </button>
-                      )}
-                      <div className="text-xs bg-slate-100 text-slate-700 px-2.5 py-1 rounded border border-slate-300 font-bold hover:bg-slate-200">
-                        Changer
-                      </div>
-                    </div>
-                  </div>
-                </div>
-
-                {/* Chauffeur Row */}
-                <div className="space-y-1">
-                  <div className="flex items-center justify-between">
-                    <span className="text-xs font-bold text-slate-700">Nom du Chauffeur</span>
-                    {selectedTruck?.driverPhone && (
-                      <span className="text-[11px] text-slate-500 font-mono flex items-center gap-1">
-                        <Phone className="h-3 w-3 text-slate-400" />
-                        Tél : <strong className="text-slate-700">{selectedTruck.driverPhone}</strong>
-                      </span>
-                    )}
-                  </div>
-                  <input
-                    type="text"
-                    value={driverName}
-                    onChange={(e) => setDriverName(e.target.value)}
-                    placeholder="Nom du chauffeur (ex: MAHDI HICHEME, GESSABI HAMID...)"
-                    className="w-full px-3 py-1.5 bg-white border border-slate-300 rounded text-xs font-medium text-slate-900 focus:ring-2 focus:ring-blue-500 focus:outline-none"
-                  />
-                </div>
-
-                {/* Tare, PTC & Net Weights Row (PONT BASCULE WORKFLOW) */}
-                <div className="space-y-2 pt-1">
-                  <div className="grid grid-cols-1 sm:grid-cols-3 gap-3">
-                    
-                    {/* Tare (Auto-filled & Fixed from selected truck) */}
-                    <div className="space-y-1 bg-slate-50 p-2.5 rounded-lg border border-slate-200">
-                      <div className="flex items-center justify-between">
-                        <span className="text-[11px] font-bold text-slate-700 flex items-center gap-1">
-                          <Lock className="h-3 w-3 text-slate-400" />
-                          Tare Fixe (T)
-                        </span>
-                        <span className="text-[10px] text-slate-400 font-medium">
-                          (Enregistrée)
-                        </span>
-                      </div>
-                      <div className="relative">
-                        <input
-                          type="number"
-                          step="0.01"
-                          readOnly
-                          placeholder="0.00"
-                          value={tare !== '' ? Number(tare).toFixed(2) : ''}
-                          className="w-full px-2.5 py-1.5 text-base font-mono font-black text-right bg-slate-100 border border-slate-300 rounded text-slate-800 cursor-not-allowed select-all"
-                          title="La tare est fixe et chargée automatiquement depuis la fiche du camion"
-                        />
-                        <span className="absolute right-2 top-1/2 -translate-y-1/2 text-xs font-bold text-slate-500">
-                          T
-                        </span>
-                      </div>
-                    </div>
-
-                    {/* PTC (Poids Total en Charge / Brut) - Only input field required */}
-                    <div className="space-y-1 bg-blue-50/80 p-2.5 rounded-lg border-2 border-blue-400 shadow-2xs">
-                      <div className="flex items-center justify-between">
-                        <span className="text-[11px] font-black text-blue-900 flex items-center gap-1">
-                          <Scale className="h-3 w-3 text-blue-600" />
-                          PTC / Brut (T) *
-                        </span>
-                        <span className="text-[10px] text-blue-700 font-bold animate-pulse">
-                          À saisir
-                        </span>
-                      </div>
-                      <div className="relative">
-                        <input
-                          type="number"
-                          step="0.01"
-                          autoFocus={Boolean(selectedTruck)}
-                          placeholder="0.00"
-                          value={ptc}
-                          onChange={(e) => {
-                            setPtc(e.target.value === '' ? '' : Number(e.target.value));
-                            setFormError(null);
-                          }}
-                          className="w-full px-2.5 py-1.5 text-base font-mono font-black text-right bg-white border border-blue-400 rounded text-blue-950 focus:ring-2 focus:ring-blue-600 focus:outline-none shadow-inner"
-                        />
-                        <span className="absolute right-2 top-1/2 -translate-y-1/2 text-xs font-black text-blue-700">
-                          T
-                        </span>
-                      </div>
-                    </div>
-
-                    {/* Poids Net (Computed automatically: PTC - Tare) */}
-                    <div className="space-y-1 bg-emerald-50 p-2.5 rounded-lg border-2 border-emerald-400 shadow-2xs">
-                      <div className="flex items-center justify-between">
-                        <span className="text-[11px] font-black text-emerald-900 flex items-center gap-1">
-                          <Calculator className="h-3 w-3 text-emerald-600" />
-                          Poids Net Facturé
-                        </span>
-                        <span className="text-[10px] text-emerald-700 font-bold">
-                          PTC - Tare
-                        </span>
-                      </div>
-                      <div className="text-base font-mono font-black text-emerald-950 py-1.5 text-right px-2 bg-emerald-100/70 border border-emerald-300 rounded">
-                        {netWeight.toFixed(2).replace('.', ',')} T
-                      </div>
-                    </div>
-
-                  </div>
-
-                  {/* Formula Helper Bar */}
-                  {selectedTruck && (
-                    <div className="bg-slate-100 text-slate-700 px-3 py-1.5 rounded-lg text-xs flex flex-wrap items-center justify-between font-medium border border-slate-200">
-                      <span className="flex items-center gap-1.5 text-[11px]">
-                        <Scale className="h-3.5 w-3.5 text-blue-600" />
-                        Calcul automatique du pont :
-                      </span>
-                      <div className="font-mono text-xs font-bold text-slate-900">
-                        <span className="text-blue-700">{typeof ptc === 'number' ? ptc.toFixed(2) : '0.00'} T</span> (PTC)
-                        {' - '}
-                        <span className="text-slate-700">{typeof tare === 'number' ? tare.toFixed(2) : '0.00'} T</span> (Tare)
-                        {' = '}
-                        <span className="text-emerald-700 font-black">{netWeight.toFixed(2)} T</span> (Net)
-                      </div>
-                    </div>
+                  {(isFavoriteTruckSelected || selectedTruck?.isFavorite || (selectedCustomer?.favoriteTruckIds || []).includes(truckId)) && (
+                    <span className="text-[10px] bg-amber-100 text-amber-900 border border-amber-300 font-bold px-1.5 py-0.2 rounded-full flex items-center gap-0.5">
+                      <Star className="h-2.5 w-2.5 fill-amber-500 text-amber-500" />
+                      Habituel Client
+                    </span>
                   )}
                 </div>
 
+                <div className="flex items-center gap-1.5">
+                  <button
+                    type="button"
+                    onClick={() => setIsTruckModalOpen(true)}
+                    className="text-xs bg-slate-50 hover:bg-slate-100 text-blue-800 border border-slate-300 px-2 py-1 rounded font-bold flex items-center gap-1 cursor-pointer"
+                  >
+                    <Search className="h-3 w-3 text-blue-600" />
+                    Tous
+                  </button>
+                  <button
+                    type="button"
+                    onClick={() => setIsFavoriteTruckModalOpen(true)}
+                    className="text-xs bg-amber-50 hover:bg-amber-100 text-amber-900 border border-amber-300 px-2 py-1 rounded font-bold flex items-center gap-1 cursor-pointer"
+                  >
+                    <Star className="h-3 w-3 fill-amber-500 text-amber-500" />
+                    Favoris {clientFavoriteTrucksCount > 0 ? `(${clientFavoriteTrucksCount})` : ''}
+                  </button>
+                </div>
               </div>
 
+              {/* Truck Display Strip */}
+              <div 
+                onClick={() => setIsTruckModalOpen(true)}
+                className={`w-full p-2.5 bg-slate-50 hover:bg-slate-100/80 border rounded-lg cursor-pointer flex items-center justify-between gap-2 transition-all ${
+                  selectedTruck ? 'border-blue-300' : 'border-slate-300 border-dashed'
+                }`}
+              >
+                <div className="min-w-0 flex items-center gap-2">
+                  <div className="w-8 h-8 rounded bg-slate-800 text-amber-400 flex items-center justify-center shrink-0">
+                    <TruckIcon className="h-4 w-4" />
+                  </div>
+                  <div className="min-w-0">
+                    {selectedTruck ? (
+                      <div className="flex flex-wrap items-center gap-2">
+                        <span className="font-mono font-black text-xs text-slate-950">
+                          {selectedTruck.matricule}
+                        </span>
+                        <span className="font-mono text-[11px] font-bold text-blue-900 bg-blue-100/70 px-1.5 py-0.2 rounded border border-blue-200">
+                          Tare: {selectedTruck.tare.toFixed(2).replace('.', ',')} T
+                        </span>
+                        {selectedTruck.driverPhone && (
+                          <span className="text-[10px] text-slate-500 font-mono">
+                            {selectedTruck.driverPhone}
+                          </span>
+                        )}
+                      </div>
+                    ) : (
+                      <span className="text-xs text-slate-400 italic">
+                        Cliquez pour sélectionner un camion...
+                      </span>
+                    )}
+                  </div>
+                </div>
+
+                <div className="shrink-0 flex items-center gap-1.5">
+                  {selectedTruck && (
+                    <>
+                      <button
+                        type="button"
+                        onClick={(e) => {
+                          e.stopPropagation();
+                          handleToggleCustomerFavoriteTruck(selectedTruck.id);
+                        }}
+                        className={`p-1 rounded cursor-pointer transition-transform hover:scale-110 ${
+                          (selectedCustomer?.favoriteTruckIds || []).includes(selectedTruck.id) || selectedTruck.isFavorite
+                            ? 'text-amber-500'
+                            : 'text-slate-400 hover:text-amber-400'
+                        }`}
+                        title="Ajouter ou retirer ce camion des favoris de ce client"
+                      >
+                        <Star className={`h-4 w-4 ${
+                          (selectedCustomer?.favoriteTruckIds || []).includes(selectedTruck.id) || selectedTruck.isFavorite
+                            ? 'fill-amber-500 text-amber-500'
+                            : ''
+                        }`} />
+                      </button>
+
+                      <button
+                        type="button"
+                        onClick={(e) => {
+                          e.stopPropagation();
+                          setTruckId('');
+                          setTare('');
+                          setIsFavoriteTruckSelected(false);
+                        }}
+                        className="text-[10px] text-red-600 hover:text-red-800 bg-red-50 border border-red-200 px-1.5 py-0.5 rounded font-semibold cursor-pointer"
+                      >
+                        Effacer
+                      </button>
+                    </>
+                  )}
+                  <span className="text-[11px] text-blue-700 font-bold">Changer</span>
+                </div>
+              </div>
+
+              {/* Chauffeur input */}
+              <div className="flex items-center gap-2 pt-1 border-t border-slate-100">
+                <span className="text-xs font-bold text-slate-700 whitespace-nowrap">Chauffeur :</span>
+                <input
+                  type="text"
+                  value={driverName}
+                  onChange={(e) => setDriverName(e.target.value)}
+                  placeholder="Nom du chauffeur (ex: MAHDI HICHEME...)"
+                  className="flex-1 px-2.5 py-1 bg-white border border-slate-300 rounded text-xs font-medium text-slate-900 focus:ring-1 focus:ring-blue-500 focus:outline-none"
+                />
+              </div>
+
+              {/* Quick Habitual Trucks Bar for Selected Customer */}
+              {selectedCustomer && (
+                <div className="pt-2 border-t border-slate-100 space-y-1.5">
+                  <div className="flex items-center justify-between">
+                    <span className="text-[11px] font-bold text-slate-700 flex items-center gap-1">
+                      <Star className="h-3 w-3 text-amber-500 fill-amber-500" />
+                      <span>Camions habituels de <strong>{selectedCustomer.name}</strong></span>
+                      {clientFavoriteTrucks.length > 0 && (
+                        <span className="text-[10px] bg-amber-100 text-amber-900 font-extrabold px-1.5 py-0.2 rounded-full font-mono">
+                          {clientFavoriteTrucks.length}
+                        </span>
+                      )}
+                    </span>
+                    <button
+                      type="button"
+                      onClick={() => setIsFavoriteTruckModalOpen(true)}
+                      className="text-[10px] font-bold text-blue-700 hover:text-blue-900 hover:underline cursor-pointer"
+                    >
+                      Voir liste complète
+                    </button>
+                  </div>
+
+                  {clientFavoriteTrucks.length > 0 ? (
+                    <div className="flex flex-wrap gap-1.5 max-h-24 overflow-y-auto pr-1">
+                      {clientFavoriteTrucks.slice(0, 8).map(trk => {
+                        const isCurrentSelected = trk.id === truckId;
+                        const isExplicitFav = (selectedCustomer.favoriteTruckIds || []).includes(trk.id) || trk.isFavorite;
+
+                        return (
+                          <button
+                            key={trk.id}
+                            type="button"
+                            onClick={() => handleSelectTruck(trk)}
+                            className={`text-left px-2 py-1 rounded-lg border text-xs transition-all flex items-center gap-1.5 cursor-pointer ${
+                              isCurrentSelected
+                                ? 'bg-blue-700 text-white border-blue-800 font-bold shadow-xs'
+                                : 'bg-slate-50 hover:bg-amber-50/80 border-slate-200 text-slate-800 hover:border-amber-300'
+                            }`}
+                            title={`Sélectionner ${trk.matricule} (Tare: ${trk.tare.toFixed(2)} T)`}
+                          >
+                            <Star className={`h-3 w-3 shrink-0 ${
+                              isCurrentSelected
+                                ? 'fill-amber-300 text-amber-300'
+                                : isExplicitFav
+                                ? 'fill-amber-500 text-amber-500'
+                                : 'text-slate-400'
+                            }`} />
+                            <span className="font-mono font-bold tracking-tight">{trk.matricule}</span>
+                            <span className={`text-[10px] px-1 py-0.2 rounded font-mono ${
+                              isCurrentSelected 
+                                ? 'bg-blue-800 text-blue-100' 
+                                : 'bg-white text-slate-600 border border-slate-200'
+                            }`}>
+                              {trk.tare.toFixed(2)}T
+                            </span>
+                          </button>
+                        );
+                      })}
+                    </div>
+                  ) : (
+                    <p className="text-[10px] text-slate-400 italic bg-slate-50 p-1.5 rounded border border-dashed border-slate-200">
+                      💡 Tout camion sélectionné pour ce client sera automatiquement retenu dans ses favoris habituels.
+                    </p>
+                  )}
+                </div>
+              )}
             </div>
 
-            {/* Optional Destination & Remarks */}
-            <div className="grid grid-cols-1 sm:grid-cols-2 gap-3 pt-2 border-t border-slate-200">
+            {/* 2. PONT BASCULE CORE (The 3 scale boxes) */}
+            <div className="bg-white p-3 rounded-xl border-2 border-blue-400 shadow-sm space-y-2">
+              <div className="flex items-center justify-between border-b border-slate-100 pb-1">
+                <span className="text-xs font-bold text-blue-900 uppercase tracking-tight flex items-center gap-1.5">
+                  <Scale className="h-4 w-4 text-blue-600" />
+                  Saisie Pesée Pont-Bascule
+                </span>
+                <span className="text-[10px] text-blue-600 font-bold">
+                  PTC - Tare = Net Facturé
+                </span>
+              </div>
+
+              <div className="grid grid-cols-3 gap-2.5">
+                {/* 1. Tare Fixe */}
+                <div className="space-y-1 bg-slate-50 p-2 rounded-lg border border-slate-200">
+                  <div className="flex items-center justify-between">
+                    <span className="text-[10px] font-bold text-slate-600 flex items-center gap-0.5">
+                      <Lock className="h-2.5 w-2.5 text-slate-400" />
+                      Tare (T)
+                    </span>
+                    <span className="text-[9px] text-slate-400">Fixe</span>
+                  </div>
+                  <div className="relative">
+                    <input
+                      type="number"
+                      step="0.01"
+                      readOnly
+                      placeholder="0.00"
+                      value={tare !== '' ? Number(tare).toFixed(2) : ''}
+                      className="w-full px-2 py-1 text-sm font-mono font-black text-right bg-slate-100 border border-slate-300 rounded text-slate-800 cursor-not-allowed select-all"
+                    />
+                    <span className="absolute right-1.5 top-1/2 -translate-y-1/2 text-[10px] font-bold text-slate-400">
+                      T
+                    </span>
+                  </div>
+                </div>
+
+                {/* 2. PTC / Brut (HIGHLIGHTED) */}
+                <div className="space-y-1 bg-blue-50 p-2 rounded-lg border-2 border-blue-500 shadow-2xs">
+                  <div className="flex items-center justify-between">
+                    <span className="text-[10px] font-black text-blue-900 flex items-center gap-0.5">
+                      <Scale className="h-2.5 w-2.5 text-blue-600" />
+                      PTC Brut *
+                    </span>
+                    <span className="text-[9px] text-blue-700 font-bold animate-pulse">Saisie</span>
+                  </div>
+                  <div className="relative">
+                    <input
+                      type="number"
+                      step="0.01"
+                      autoFocus={Boolean(selectedTruck)}
+                      placeholder="0.00"
+                      value={ptc}
+                      onChange={(e) => {
+                        setPtc(e.target.value === '' ? '' : Number(e.target.value));
+                        setFormError(null);
+                      }}
+                      className="w-full px-2 py-1 text-base font-mono font-black text-right bg-white border border-blue-400 rounded text-blue-950 focus:ring-2 focus:ring-blue-600 focus:outline-none shadow-inner"
+                    />
+                    <span className="absolute right-1.5 top-1/2 -translate-y-1/2 text-[10px] font-black text-blue-700">
+                      T
+                    </span>
+                  </div>
+                </div>
+
+                {/* 3. Poids Net Facturé */}
+                <div className="space-y-1 bg-emerald-50 p-2 rounded-lg border-2 border-emerald-400 shadow-2xs">
+                  <div className="flex items-center justify-between">
+                    <span className="text-[10px] font-black text-emerald-900 flex items-center gap-0.5">
+                      <Calculator className="h-2.5 w-2.5 text-emerald-600" />
+                      Poids Net
+                    </span>
+                    <span className="text-[9px] text-emerald-700 font-bold">Facturé</span>
+                  </div>
+                  <div className="text-base font-mono font-black text-emerald-950 py-1 text-right px-2 bg-emerald-100/70 border border-emerald-300 rounded">
+                    {netWeight.toFixed(2).replace('.', ',')} T
+                  </div>
+                </div>
+              </div>
+
+              {/* Quick helper calculation strip */}
+              {selectedTruck && (
+                <div className="text-[11px] font-mono text-center font-bold text-slate-700 bg-slate-50 py-1 rounded border border-slate-200">
+                  <span className="text-blue-700">{typeof ptc === 'number' ? ptc.toFixed(2) : '0.00'} T</span> (PTC)
+                  {' - '}
+                  <span className="text-slate-700">{typeof tare === 'number' ? tare.toFixed(2) : '0.00'} T</span> (Tare)
+                  {' = '}
+                  <span className="text-emerald-700 font-black">{netWeight.toFixed(2)} T Net</span>
+                </div>
+              )}
+            </div>
+
+          </div>
+
+        </div>
+
+        {/* ACCORDION for Optional / Secondary Details */}
+        <Accordion>
+          {/* Accordion Item 1: Chantier, Destination & Observations */}
+          <AccordionItem
+            id="destination"
+            title="Chantier, Destination & Observations"
+            subtitle="Informations optionnelles de transport et remarques du bon"
+            icon={<Tag className="h-4 w-4 text-blue-600" />}
+            defaultOpen={Boolean(destination || remarks)}
+          >
+            <div className="grid grid-cols-1 sm:grid-cols-2 gap-3 pt-1">
               <div>
-                <label className="text-[11px] font-semibold text-slate-600 block mb-0.5">
+                <label className="text-xs font-semibold text-slate-700 block mb-1">
                   Chantier / Destination (Optionnel)
                 </label>
                 <input
@@ -1532,12 +1356,12 @@ export function DeliveryForm() {
                   value={destination}
                   onChange={(e) => setDestination(e.target.value)}
                   placeholder="Ex: Chantier Autoroute Est-Ouest, Lot 4..."
-                  className="w-full px-3 py-1 text-xs bg-white border border-slate-200 rounded focus:ring-1 focus:ring-blue-500 focus:outline-none"
+                  className="w-full px-3 py-1.5 text-xs bg-white border border-slate-300 rounded-lg focus:ring-1 focus:ring-blue-500 focus:outline-none"
                 />
               </div>
 
               <div>
-                <label className="text-[11px] font-semibold text-slate-600 block mb-0.5">
+                <label className="text-xs font-semibold text-slate-700 block mb-1">
                   Observations / Remarques (Optionnel)
                 </label>
                 <input
@@ -1545,50 +1369,132 @@ export function DeliveryForm() {
                   value={remarks}
                   onChange={(e) => setRemarks(e.target.value)}
                   placeholder="Ex: N° Bon de Commande, Chauffeur suppléant..."
-                  className="w-full px-3 py-1 text-xs bg-white border border-slate-200 rounded focus:ring-1 focus:ring-blue-500 focus:outline-none"
+                  className="w-full px-3 py-1.5 text-xs bg-white border border-slate-300 rounded-lg focus:ring-1 focus:ring-blue-500 focus:outline-none"
                 />
               </div>
             </div>
+          </AccordionItem>
 
+          {/* Accordion Item 2: Remise & Détails Financiers */}
+          <AccordionItem
+            id="remise"
+            title="Remise Commerciale & Détails Financiers"
+            subtitle="Déduction financière exceptionnelle ou remise globale"
+            icon={<CreditCard className="h-4 w-4 text-emerald-600" />}
+            defaultOpen={Boolean(discount && Number(discount) > 0)}
+          >
+            <div className="flex flex-wrap items-center justify-between gap-4 pt-1">
+              <div className="flex items-center gap-2">
+                <label className="text-xs font-bold text-slate-700">
+                  Remise sur le bon :
+                </label>
+                <div className="flex items-center gap-1">
+                  <input
+                    type="number"
+                    step="0.01"
+                    placeholder="0.00"
+                    value={discount}
+                    onChange={(e) => setDiscount(e.target.value === '' ? '' : Number(e.target.value))}
+                    className="w-28 px-2.5 py-1 text-xs font-mono font-bold text-right bg-white border border-slate-300 rounded focus:ring-1 focus:ring-blue-500 focus:outline-none"
+                  />
+                  <span className="text-xs font-bold text-slate-500">DA</span>
+                </div>
+              </div>
+
+              <div className="text-xs text-slate-600">
+                TVA applicable : <strong>{tvaRate}%</strong> | Total TVA : <strong>{formatCurrency(totalTVA)}</strong>
+              </div>
+            </div>
+          </AccordionItem>
+
+          {/* Accordion Item 3: Commande Client Rattachée (if any) */}
+          {(currentLinkedOrder || customerOrders.length > 0) && (
+            <AccordionItem
+              id="commande"
+              title={`Commande Client Rattachée ${currentLinkedOrder ? `(${currentLinkedOrder.number})` : `(${customerOrders.length} disponible(s))`}`}
+              subtitle="Liaison avec une commande client préalable"
+              icon={<PackageCheck className="h-4 w-4 text-indigo-600" />}
+              defaultOpen={Boolean(currentLinkedOrder)}
+            >
+              <div className="space-y-2.5 pt-1">
+                {currentLinkedOrder ? (
+                  <div className="flex flex-wrap items-center justify-between gap-2">
+                    <div className="flex items-center gap-2 text-xs">
+                      <span className="font-bold text-slate-800">Commande :</span>
+                      <span className="font-mono font-bold text-blue-900 bg-blue-50 px-2 py-0.5 rounded border border-blue-200">
+                        {currentLinkedOrder.number} ({formatDate(currentLinkedOrder.date)})
+                      </span>
+                    </div>
+
+                    <button
+                      type="button"
+                      onClick={() => {
+                        setLinkedOrderId('');
+                        setLinkedOrderItemId('');
+                        setIsAutoPrice(true);
+                      }}
+                      className="text-xs text-red-600 hover:text-red-700 bg-red-50 hover:bg-red-100 border border-red-200 px-2.5 py-1 rounded font-semibold flex items-center gap-1 cursor-pointer"
+                    >
+                      <Unlink className="h-3 w-3" />
+                      Dissocier la commande
+                    </button>
+                  </div>
+                ) : (
+                  <div className="flex flex-wrap items-center gap-2 text-xs">
+                    <span className="text-slate-600">Commandes disponibles pour ce client :</span>
+                    {customerOrders.map(o => (
+                      <button
+                        key={o.id}
+                        type="button"
+                        onClick={() => applyOrderToDelivery(o)}
+                        className="bg-blue-50 hover:bg-blue-100 text-blue-900 border border-blue-200 px-2 py-0.5 rounded font-bold cursor-pointer transition-colors"
+                      >
+                        Lier {o.number}
+                      </button>
+                    ))}
+                  </div>
+                )}
+              </div>
+            </AccordionItem>
+          )}
+        </Accordion>
+
+        {/* Bottom Actions Bar */}
+        <div className="flex flex-wrap items-center justify-between gap-3 pt-2 border-t border-slate-200">
+          <div className="text-xs text-slate-500">
+            * Poids Brut (PTC) &gt; Tare pour valider le ticket.
           </div>
 
-          {/* SECTION 4: Final Bottom Validation Bar */}
-          <div className="flex flex-wrap items-center justify-between gap-3 pt-2">
-            
-            <div className="text-xs text-slate-500">
-              * Assurez-vous que le Poids Brut (PTC) est supérieur à la Tare pour générer le bon.
-            </div>
+          <div className="flex items-center gap-2">
+            <Button
+              variant="outline"
+              size="sm"
+              onClick={() => navigate('/deliveries')}
+              className="cursor-pointer text-xs"
+            >
+              Annuler
+            </Button>
 
-            <div className="flex items-center gap-3">
-              <Button
-                variant="outline"
-                onClick={() => navigate('/deliveries')}
-                className="cursor-pointer"
-              >
-                Annuler
-              </Button>
+            <Button
+              size="sm"
+              onClick={() => handleSave(false)}
+              disabled={isSaving}
+              className="bg-emerald-600 hover:bg-emerald-500 text-white font-bold text-xs px-4 shadow-sm cursor-pointer disabled:opacity-50"
+            >
+              <Save className="h-3.5 w-3.5 mr-1" />
+              Valider
+            </Button>
 
-              <Button
-                onClick={() => handleSave(false)}
-                disabled={isSaving}
-                className="bg-emerald-600 hover:bg-emerald-500 text-white font-bold px-6 shadow-md cursor-pointer flex items-center gap-1.5 disabled:opacity-50"
-              >
-                <Save className="h-4 w-4" />
-                Valider
-              </Button>
-
-              <Button
-                onClick={() => handleSave(true)}
-                disabled={isSaving}
-                className="bg-blue-700 hover:bg-blue-800 text-white font-bold px-6 shadow-md cursor-pointer flex items-center gap-1.5 disabled:opacity-50"
-              >
-                <Printer className="h-4 w-4" />
-                Valider & Imprimer
-              </Button>
-            </div>
-
+            <Button
+              size="sm"
+              onClick={() => handleSave(true)}
+              disabled={isSaving}
+              className="bg-blue-600 hover:bg-blue-700 text-white font-bold text-xs px-4 shadow-sm cursor-pointer disabled:opacity-50"
+            >
+              <Printer className="h-3.5 w-3.5 mr-1" />
+              Valider & Imprimer
+            </Button>
           </div>
-
         </div>
 
       </div>
@@ -1613,6 +1519,9 @@ export function DeliveryForm() {
         trucks={trucks}
         drivers={drivers}
         selectedTruckId={truckId}
+        customerName={selectedCustomer?.name}
+        customerFavoriteTruckIds={selectedCustomer?.favoriteTruckIds || []}
+        onToggleCustomerFavorite={handleToggleCustomerFavoriteTruck}
         companyName={companySettings?.name || 'SARL MAHAJIR SIDAR - CARRIERE D\'AGREGATS'}
       />
 
@@ -1623,6 +1532,8 @@ export function DeliveryForm() {
         onSelect={(truck, drv) => handleSelectTruck(truck, drv, true)}
         customerName={selectedCustomer?.name || 'DEVERS'}
         customerId={customerId}
+        customerFavoriteTruckIds={selectedCustomer?.favoriteTruckIds || []}
+        onToggleCustomerFavorite={handleToggleCustomerFavoriteTruck}
         trucks={trucks}
         drivers={drivers}
         deliveries={deliveries}
@@ -1637,6 +1548,7 @@ export function DeliveryForm() {
         products={products}
         productPrices={productPrices}
         conventionId={selectedCustomer?.familyId}
+        customPrices={selectedCustomer?.customPrices}
       />
 
       {/* 5. Success Validation Modal (Quick action when clicking 'Valider') */}
@@ -1718,25 +1630,49 @@ export function DeliveryForm() {
                 </div>
               </div>
 
-              <div className="flex items-center gap-2">
-                <div className="flex bg-slate-200 p-1 rounded-xl text-xs font-semibold">
+              <div className="flex flex-wrap items-center gap-2">
+                <div className="flex bg-slate-200 p-1 rounded-xl text-xs font-semibold gap-1">
                   <button
                     type="button"
-                    onClick={() => setPrintFormat('A4')}
-                    className={`px-3 py-1.5 rounded-lg transition-colors cursor-pointer ${
-                      printFormat === 'A4' ? 'bg-white text-blue-700 shadow-xs' : 'text-slate-600 hover:text-slate-900'
+                    onClick={() => setPrintFormat('landscape2')}
+                    title="A4 Paysage - 2 Copies sur 1 page (Économise 50% de papier)"
+                    className={`flex items-center gap-1.5 px-3 py-1.5 rounded-lg transition-all cursor-pointer ${
+                      printFormat === 'landscape2' ? 'bg-emerald-600 text-white shadow-xs font-bold' : 'text-slate-700 hover:text-slate-900'
                     }`}
                   >
-                    Format A4 Standard
+                    <Copy className="h-3.5 w-3.5" />
+                    <span>Paysage (2 Copies Éco)</span>
+                  </button>
+                  <button
+                    type="button"
+                    onClick={() => setPrintFormat('label')}
+                    title="Format Étiquette / Sticker autocollant petite taille (58mm)"
+                    className={`flex items-center gap-1.5 px-2.5 py-1.5 rounded-lg transition-all cursor-pointer ${
+                      printFormat === 'label' ? 'bg-blue-600 text-white shadow-xs font-bold' : 'text-slate-700 hover:text-slate-900'
+                    }`}
+                  >
+                    <Tag className="h-3.5 w-3.5" />
+                    <span>Étiquette</span>
                   </button>
                   <button
                     type="button"
                     onClick={() => setPrintFormat('ticket')}
-                    className={`px-3 py-1.5 rounded-lg transition-colors cursor-pointer ${
-                      printFormat === 'ticket' ? 'bg-white text-blue-700 shadow-xs' : 'text-slate-600 hover:text-slate-900'
+                    title="Ticket thermique 80mm de caisse"
+                    className={`px-2.5 py-1.5 rounded-lg transition-all cursor-pointer ${
+                      printFormat === 'ticket' ? 'bg-blue-600 text-white shadow-xs font-bold' : 'text-slate-700 hover:text-slate-900'
                     }`}
                   >
                     Ticket 80mm
+                  </button>
+                  <button
+                    type="button"
+                    onClick={() => setPrintFormat('A4')}
+                    title="Format A4 Portrait standard (1 copie pleine page)"
+                    className={`px-2.5 py-1.5 rounded-lg transition-all cursor-pointer ${
+                      printFormat === 'A4' ? 'bg-blue-600 text-white shadow-xs font-bold' : 'text-slate-700 hover:text-slate-900'
+                    }`}
+                  >
+                    A4 1-Page
                   </button>
                 </div>
 
@@ -1755,8 +1691,14 @@ export function DeliveryForm() {
             {/* Document Preview */}
             <div className="p-6 overflow-y-auto flex-1 bg-slate-100/50 flex justify-center">
               <div 
-                className={`bg-white border border-slate-200 shadow-sm rounded-xl p-6 ${
-                  printFormat === 'ticket' ? 'w-[320px]' : 'w-full max-w-2xl'
+                className={`bg-white border border-slate-200 shadow-sm rounded-xl p-4 transition-all ${
+                  printFormat === 'label' 
+                    ? 'w-[280px]' 
+                    : printFormat === 'ticket' 
+                    ? 'w-[340px]' 
+                    : printFormat === 'landscape2' 
+                    ? 'w-full max-w-4xl' 
+                    : 'w-full max-w-2xl'
                 }`}
                 dangerouslySetInnerHTML={{ __html: generateBLHtml(savedDeliveryData, printFormat) }}
               />

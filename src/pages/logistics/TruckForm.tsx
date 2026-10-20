@@ -4,10 +4,18 @@ import { useLiveQuery } from 'dexie-react-hooks';
 import { db } from '../../db/db';
 import { 
   ArrowLeft, Check, Trash2, X, Upload, Camera, Image as ImageIcon, 
-  Truck as TruckIcon, Phone, User, AlertTriangle, Star
+  Truck as TruckIcon, Phone, User, AlertTriangle, Star, Save, 
+  CreditCard, FileText, UserCheck, Sparkles, CheckCircle2
 } from 'lucide-react';
 import { Truck } from '../../types';
 import { useAuthStore } from '../../store/authStore';
+import { 
+  validateAlgerianMobile, 
+  validateAlgerianPhone, 
+  sanitizePhoneNumber,
+  formatAlgerianMobileInput,
+  hasAlgerianIndicatif
+} from '../../utils/algerianValidation';
 
 export function TruckForm() {
   const { user } = useAuthStore();
@@ -18,16 +26,25 @@ export function TruckForm() {
   const isEditing = Boolean(id);
   const fileInputRef = useRef<HTMLInputElement>(null);
 
-  const drivers = useLiveQuery(() => db.drivers.where('companyId').equals(currentCompanyId).filter(x => x.companyId === currentCompanyId).toArray()) || [];
+  const drivers = useLiveQuery(() => 
+    db.drivers.where('companyId').equals(currentCompanyId).filter(x => x.companyId === currentCompanyId).toArray()
+  ) || [];
 
-  // Form State matching "Fiche Camion Liaison PC"
+  // Form State: Truck fields
   const [matricule, setMatricule] = useState('');
+  const [brand, setBrand] = useState('');
+  const [tare, setTare] = useState<number | string>('');
   const [mnTonne, setMnTonne] = useState<number | string>(0);
+  const [volumeM3, setVolumeM3] = useState<number | string>('');
+  
+  // Form State: Integrated Driver fields
   const [driverName, setDriverName] = useState('');
   const [driverPhone, setDriverPhone] = useState('');
+  const [driverLicense, setDriverLicense] = useState('');
+  const [driverNotes, setDriverNotes] = useState('');
   const [driverId, setDriverId] = useState('');
-  const [tare, setTare] = useState<number | string>('');
-  const [volumeM3, setVolumeM3] = useState<number | string>('');
+
+  // Form State: Options & Status
   const [allowDiscount, setAllowDiscount] = useState<boolean>(false);
   const [isFavorite, setIsFavorite] = useState<boolean>(false);
   const [imageUrl, setImageUrl] = useState<string>('');
@@ -42,12 +59,17 @@ export function TruckForm() {
       db.trucks.get(id).then(truck => {
         if (truck) {
           setMatricule(truck.matricule || '');
+          setBrand(truck.brand || '');
+          setTare(truck.tare !== undefined ? truck.tare : '');
           setMnTonne(truck.mnTonne !== undefined ? truck.mnTonne : 0);
+          setVolumeM3(truck.volumeM3 !== undefined ? truck.volumeM3 : '');
+          
           setDriverName(truck.driverName || '');
           setDriverPhone(truck.driverPhone || '');
+          setDriverLicense(truck.driverLicense || '');
+          setDriverNotes(truck.driverNotes || '');
           setDriverId(truck.driverId || '');
-          setTare(truck.tare !== undefined ? truck.tare : '');
-          setVolumeM3(truck.volumeM3 !== undefined ? truck.volumeM3 : '');
+
           setAllowDiscount(Boolean(truck.allowDiscount));
           setIsFavorite(Boolean(truck.isFavorite));
           setImageUrl(truck.imageUrl || '');
@@ -57,25 +79,33 @@ export function TruckForm() {
     }
   }, [id, isEditing]);
 
-  // When a driver is selected from existing drivers list, auto-fill driverName and driverPhone
-  const handleDriverSelect = (selectedDriverId: string) => {
-
-    setDriverId(selectedDriverId);
-    if (selectedDriverId) {
-      const found = drivers.find(d => d.id === selectedDriverId);
-      if (found) {
-        setDriverName(found.name);
-        if (found.phone) setDriverPhone(found.phone);
+  // When a driver is selected from existing suggestions, auto-fill driver details
+  const handleDriverChange = (nameInput: string) => {
+    setDriverName(nameInput);
+    const found = drivers.find(d => d.name.toLowerCase().trim() === nameInput.toLowerCase().trim());
+    if (found) {
+      setDriverId(found.id);
+      if (found.phone && !driverPhone) {
+        setDriverPhone(found.phone);
       }
     }
   };
 
-  // Image Upload handler (convert to Base64 data URL)
+  const handleSelectExistingDriver = (selectedDrvId: string) => {
+    setDriverId(selectedDrvId);
+    const found = drivers.find(d => d.id === selectedDrvId);
+    if (found) {
+      setDriverName(found.name);
+      setDriverPhone(found.phone || '');
+    }
+  };
+
+  // Image Upload handler (Base64)
   const handleImageChange = (e: React.ChangeEvent<HTMLInputElement>) => {
     const file = e.target.files?.[0];
     if (file) {
       if (file.size > 5 * 1024 * 1024) {
-        alert("L'image est trop volumineuse (max 5 Mo).");
+        setFormError("L'image est trop volumineuse (max 5 Mo).");
         return;
       }
       const reader = new FileReader();
@@ -91,7 +121,7 @@ export function TruckForm() {
     const file = e.dataTransfer.files?.[0];
     if (file && file.type.startsWith('image/')) {
       if (file.size > 5 * 1024 * 1024) {
-        alert("L'image est trop volumineuse (max 5 Mo).");
+        setFormError("L'image est trop volumineuse (max 5 Mo).");
         return;
       }
       const reader = new FileReader();
@@ -112,25 +142,66 @@ export function TruckForm() {
     }
 
     if (tare === '' || isNaN(Number(tare)) || Number(tare) < 0) {
-      setFormError('Veuillez saisir une tare valide en tonnes.');
+      setFormError('Veuillez saisir une tare valide en tonnes (ex: 12.50).');
       return;
     }
 
+    if (driverPhone.trim() && !validateAlgerianMobile(driverPhone) && !validateAlgerianPhone(driverPhone)) {
+      setFormError('Numéro de téléphone chauffeur invalide (10 chiffres max commençant par 05, 06 ou 07, sauf si on utilise l\'indicatif (213)).');
+      return;
+    }
+
+    const cleanDriverPhone = driverPhone.trim() ? sanitizePhoneNumber(driverPhone) : '';
+
     setIsSubmitting(true);
     try {
+      let resolvedDriverId = driverId;
+
+      // Integrated driver sync: if driverName is provided, ensure driver exists or create it
+      if (driverName.trim()) {
+        const existingDriver = drivers.find(
+          d => d.name.toLowerCase().trim() === driverName.toLowerCase().trim()
+        );
+
+        if (existingDriver) {
+          resolvedDriverId = existingDriver.id;
+          // Update phone if changed
+          if (cleanDriverPhone && existingDriver.phone !== cleanDriverPhone) {
+            await db.drivers.update(existingDriver.id, {
+              phone: cleanDriverPhone
+            });
+          }
+        } else {
+          // Auto-create new driver record seamlessly
+          const newDriverId = `DRV_${Date.now()}_${Math.random().toString(36).substring(2, 6)}`;
+          await db.drivers.add({
+            id: newDriverId,
+            name: driverName.trim(),
+            phone: cleanDriverPhone,
+            active: true,
+            companyId: currentCompanyId
+          });
+          resolvedDriverId = newDriverId;
+        }
+      }
+
       const truckPayload: Truck = {
-        id: isEditing && id ? id : crypto.randomUUID(),
-        matricule: matricule.trim(),
+        id: isEditing && id ? id : `TRK_${Date.now()}_${Math.random().toString(36).substring(2, 6)}`,
+        matricule: matricule.trim().toUpperCase(),
+        brand: brand.trim() || undefined,
         tare: Number(tare),
         mnTonne: mnTonne === '' ? 0 : Number(mnTonne),
         volumeM3: volumeM3 === '' ? undefined : Number(volumeM3),
         driverName: driverName.trim() || undefined,
-        driverPhone: driverPhone.trim() || undefined,
-        driverId: driverId || undefined,
+        driverPhone: cleanDriverPhone || undefined,
+        driverLicense: driverLicense.trim() || undefined,
+        driverNotes: driverNotes.trim() || undefined,
+        driverId: resolvedDriverId || undefined,
         allowDiscount: Boolean(allowDiscount),
         isFavorite: Boolean(isFavorite),
         imageUrl: imageUrl || undefined,
-        active
+        active,
+        companyId: currentCompanyId
       };
 
       if (isEditing && id) {
@@ -139,25 +210,10 @@ export function TruckForm() {
         await db.trucks.add(truckPayload);
       }
 
-      // Also if driverName is new and not in drivers list, optionally create/update driver
-      if (driverName.trim()) {
-        const existingDriver = drivers.find(
-          d => d.name.toLowerCase().trim() === driverName.toLowerCase().trim()
-        );
-        if (!existingDriver) {
-          await db.drivers.add({
-            id: crypto.randomUUID(),
-            name: driverName.trim(),
-            phone: driverPhone.trim(),
-            active: true
-          });
-        }
-      }
-
       navigate('/logistics?tab=trucks');
     } catch (error) {
-      console.error('Failed to save truck:', error);
-      setFormError('Erreur lors de la sauvegarde du camion.');
+      console.error('Failed to save truck and driver:', error);
+      setFormError('Erreur lors de la sauvegarde du camion et de son chauffeur.');
     } finally {
       setIsSubmitting(false);
     }
@@ -170,350 +226,486 @@ export function TruckForm() {
       navigate('/logistics?tab=trucks');
     } catch (err) {
       console.error('Failed to delete truck', err);
-      alert('Erreur lors de la suppression du camion.');
+      setFormError('Erreur lors de la suppression du camion.');
     }
   };
 
   return (
-    <div className="max-w-4xl mx-auto space-y-4 animate-in fade-in duration-200">
+    <div className="max-w-5xl mx-auto space-y-4 animate-in fade-in duration-200 pb-12">
       
-      {/* Top back navigation */}
-      <div className="flex items-center justify-between">
-        <button 
-          onClick={() => navigate('/logistics?tab=trucks')}
-          className="flex items-center gap-2 text-xs font-bold text-slate-600 hover:text-slate-900 bg-white border border-slate-300 px-3 py-1.5 rounded-lg shadow-2xs cursor-pointer transition-colors"
-        >
-          <ArrowLeft className="h-4 w-4" />
-          Retour à la liste des camions
-        </button>
-        <span className="text-xs font-mono font-bold text-slate-500">
-          Système Liaison Pont-Bascule PC
-        </span>
-      </div>
-
-      {formError && (
-        <div className="p-3 bg-red-100 border border-red-300 text-red-800 rounded-lg text-xs flex items-center gap-2">
-          <AlertTriangle className="h-4 w-4 text-red-600 shrink-0" />
-          <span>{formError}</span>
-        </div>
-      )}
-
-      {/* Main Form Container in standard application theme */}
-      <div className="bg-white rounded-xl border border-slate-200 shadow-sm overflow-hidden">
-        
-        {/* Form Header */}
-        <div className="p-6 border-b border-slate-100 flex flex-wrap items-center justify-between gap-4">
-          <div className="flex items-center gap-3">
-            <div className="p-2.5 bg-blue-50 text-blue-700 rounded-xl border border-blue-100">
-              <TruckIcon className="h-6 w-6" />
+      {/* Top Navigation & Action Bar */}
+      <div className="flex flex-wrap items-center justify-between gap-3 bg-white p-4 rounded-xl border border-slate-200 shadow-2xs">
+        <div className="flex items-center gap-3">
+          <button 
+            type="button"
+            onClick={() => navigate('/logistics?tab=trucks')}
+            className="flex items-center gap-1.5 text-xs font-bold text-slate-600 hover:text-slate-900 bg-slate-100 hover:bg-slate-200 px-3 py-2 rounded-lg cursor-pointer transition-colors"
+          >
+            <ArrowLeft className="h-4 w-4" />
+            <span>Retour</span>
+          </button>
+          
+          <div className="flex items-center gap-2.5">
+            <div className="p-2 bg-blue-600 text-white rounded-xl shadow-xs">
+              <TruckIcon className="h-5 w-5" />
             </div>
             <div>
-              <h1 className="text-xl font-bold text-slate-900">
-                {isEditing ? 'Modifier le Camion' : 'Nouveau Camion'}
-              </h1>
+              <div className="flex items-center gap-2">
+                <h1 className="text-base sm:text-lg font-bold text-slate-900">
+                  {isEditing ? `Modifier : ${matricule || 'Camion'}` : 'Nouveau Camion & Chauffeur'}
+                </h1>
+                <span className="hidden sm:inline-flex items-center gap-1 px-2 py-0.5 rounded-full text-[10px] font-bold bg-blue-50 text-blue-700 border border-blue-200">
+                  <Sparkles className="h-3 w-3" />
+                  Formulaire Tout-en-un
+                </span>
+              </div>
               <p className="text-xs text-slate-500">
-                Paramétrage du camion et tare pour la liaison pont-bascule
+                Saisie directe du camion, de la tare fixe et du chauffeur attitré
               </p>
             </div>
           </div>
-
-          <div className="flex items-center gap-2">
-            <span className={`px-2.5 py-1 rounded-full text-xs font-semibold flex items-center gap-1.5 ${
-              active ? 'bg-emerald-50 text-emerald-700 border border-emerald-200' : 'bg-slate-100 text-slate-600 border border-slate-200'
-            }`}>
-              <span className={`w-1.5 h-1.5 rounded-full ${active ? 'bg-emerald-500' : 'bg-slate-400'}`} />
-              {active ? 'Camion en service' : 'Inactif / Hors service'}
-            </span>
-          </div>
         </div>
 
-        <form onSubmit={handleSubmit} className="p-6 space-y-6">
+        <div className="flex items-center gap-2">
+          {isEditing && (
+            <button
+              type="button"
+              onClick={() => setShowDeleteModal(true)}
+              className="px-3 py-2 text-xs font-semibold text-red-600 hover:text-red-700 bg-red-50 hover:bg-red-100 border border-red-200 rounded-lg flex items-center gap-1.5 transition-colors cursor-pointer"
+            >
+              <Trash2 className="h-4 w-4" />
+              <span className="hidden sm:inline">Supprimer</span>
+            </button>
+          )}
+
+          <button
+            type="button"
+            onClick={() => navigate('/logistics?tab=trucks')}
+            className="px-3.5 py-2 text-xs font-semibold text-slate-700 hover:text-slate-900 bg-white border border-slate-300 rounded-lg cursor-pointer hover:bg-slate-50 transition-colors"
+          >
+            Annuler
+          </button>
+
+          <button
+            type="button"
+            onClick={handleSubmit}
+            disabled={isSubmitting}
+            className="px-5 py-2 text-xs font-bold text-white bg-blue-600 hover:bg-blue-700 disabled:opacity-50 rounded-lg flex items-center gap-1.5 shadow-sm cursor-pointer transition-all"
+          >
+            <Save className="h-4 w-4" />
+            {isSubmitting ? 'Enregistrement...' : 'Enregistrer'}
+          </button>
+        </div>
+      </div>
+
+      {/* Error Banner */}
+      {formError && (
+        <div className="p-3.5 bg-red-50 border border-red-300 text-red-800 rounded-xl text-xs flex items-center justify-between gap-2 shadow-2xs">
+          <div className="flex items-center gap-2">
+            <AlertTriangle className="h-4 w-4 text-red-600 shrink-0" />
+            <span className="font-medium">{formError}</span>
+          </div>
+          <button 
+            type="button" 
+            onClick={() => setFormError(null)} 
+            className="text-red-500 hover:text-red-700 p-1 cursor-pointer"
+          >
+            <X className="h-4 w-4" />
+          </button>
+        </div>
+      )}
+
+      <form onSubmit={handleSubmit} className="space-y-4">
+        
+        {/* Main 2-Column Grid: Left (Camion / Pont-Bascule) & Right (Chauffeur Intégré) */}
+        <div className="grid grid-cols-1 lg:grid-cols-12 gap-4">
           
-          <div className="grid grid-cols-1 lg:grid-cols-12 gap-6">
+          {/* SECTION 1: CAMION & PONT-BASCULE (7 cols) */}
+          <div className="lg:col-span-7 bg-white p-4 sm:p-5 rounded-xl border border-slate-200 shadow-2xs space-y-4">
             
-            {/* Left Column: Form Fields (8 cols) */}
-            <div className="lg:col-span-8 space-y-6">
-              
-              {/* Section 1: Informations Générales */}
-              <div className="space-y-4">
-                <h2 className="text-sm font-bold text-slate-800 uppercase tracking-wider border-b border-slate-100 pb-2">
-                  Informations Générales
-                </h2>
-
-                <div className="grid grid-cols-1 sm:grid-cols-2 gap-4">
-                  
-                  {/* Matricule */}
-                  <div className="space-y-1.5">
-                    <label className="text-xs font-bold text-slate-700 flex items-center gap-1">
-                      Matricule du Camion <span className="text-red-500 font-bold">*</span>
-                    </label>
-                    <input
-                      type="text"
-                      required
-                      autoFocus
-                      placeholder="Ex: 000082 25 26"
-                      value={matricule}
-                      onChange={(e) => setMatricule(e.target.value)}
-                      className="w-full px-3.5 py-2 bg-white border border-slate-300 rounded-lg text-sm font-mono font-bold text-slate-900 placeholder:text-slate-400 focus:outline-none focus:ring-2 focus:ring-blue-500 focus:border-transparent transition-all shadow-2xs"
-                    />
-                  </div>
-
-                  {/* Mn tonne */}
-                  <div className="space-y-1.5">
-                    <div className="flex items-center justify-between">
-                      <label className="text-xs font-bold text-slate-700">
-                        Mn Tonne (T)
-                      </label>
-                      <span className="text-[11px] text-slate-400">Poids minimum</span>
-                    </div>
-                    <div className="relative">
-                      <input
-                        type="number"
-                        step="0.01"
-                        placeholder="0.00"
-                        value={mnTonne}
-                        onChange={(e) => setMnTonne(e.target.value)}
-                        className="w-full px-3.5 py-2 bg-white border border-slate-300 rounded-lg text-sm font-mono font-semibold text-slate-900 placeholder:text-slate-400 focus:outline-none focus:ring-2 focus:ring-blue-500 focus:border-transparent transition-all shadow-2xs pr-8"
-                      />
-                      <span className="absolute right-3 top-1/2 -translate-y-1/2 text-xs font-bold text-slate-400">
-                        T
-                      </span>
-                    </div>
-                  </div>
-
-                  {/* Tare (Fixe) */}
-                  <div className="space-y-1.5">
-                    <div className="flex items-center justify-between">
-                      <label className="text-xs font-bold text-slate-700 flex items-center gap-1">
-                        Tare fixe (T) <span className="text-red-500 font-bold">*</span>
-                      </label>
-                      <span className="text-[11px] text-blue-600 font-medium">Poids à vide</span>
-                    </div>
-                    <div className="relative">
-                      <input
-                        type="number"
-                        step="0.01"
-                        required
-                        placeholder="0.00"
-                        value={tare}
-                        onChange={(e) => setTare(e.target.value)}
-                        className="w-full px-3.5 py-2 bg-blue-50/50 border border-blue-200 rounded-lg text-sm font-mono font-black text-blue-950 placeholder:text-slate-400 focus:outline-none focus:ring-2 focus:ring-blue-500 focus:border-transparent transition-all shadow-2xs pr-8"
-                      />
-                      <span className="absolute right-3 top-1/2 -translate-y-1/2 text-xs font-bold text-blue-700">
-                        T
-                      </span>
-                    </div>
-                  </div>
-
-                  {/* Volume (m³) */}
-                  <div className="space-y-1.5">
-                    <div className="flex items-center justify-between">
-                      <label className="text-xs font-bold text-slate-700">
-                        Volume / Mètre cube (m³)
-                      </label>
-                      <span className="text-[11px] text-slate-400">Capacité benne</span>
-                    </div>
-                    <div className="relative">
-                      <input
-                        type="number"
-                        step="0.1"
-                        placeholder="0.00"
-                        value={volumeM3}
-                        onChange={(e) => setVolumeM3(e.target.value)}
-                        className="w-full px-3.5 py-2 bg-white border border-slate-300 rounded-lg text-sm font-mono font-semibold text-slate-900 placeholder:text-slate-400 focus:outline-none focus:ring-2 focus:ring-blue-500 focus:border-transparent transition-all shadow-2xs pr-10"
-                      />
-                      <span className="absolute right-3 top-1/2 -translate-y-1/2 text-xs font-bold text-slate-400">
-                        m³
-                      </span>
-                    </div>
-                  </div>
-
+            <div className="flex items-center justify-between border-b border-slate-100 pb-3">
+              <div className="flex items-center gap-2">
+                <div className="p-1.5 bg-slate-100 text-slate-700 rounded-lg">
+                  <TruckIcon className="h-4 w-4 text-blue-600" />
+                </div>
+                <div>
+                  <h2 className="text-xs sm:text-sm font-bold text-slate-900 uppercase tracking-tight">
+                    1. Fiche Technique du Camion
+                  </h2>
+                  <p className="text-[11px] text-slate-500">
+                    Paramètres de pesée au pont-bascule
+                  </p>
                 </div>
               </div>
-
-              {/* Section 2: Chauffeur & Contact */}
-              <div className="space-y-4 pt-2">
-                <h2 className="text-sm font-bold text-slate-800 uppercase tracking-wider border-b border-slate-100 pb-2">
-                  Chauffeur & Contact
-                </h2>
-
-                <div className="grid grid-cols-1 sm:grid-cols-2 gap-4">
-                  
-                  {/* Chauffeur Nom */}
-                  <div className="space-y-1.5">
-                    <div className="flex items-center justify-between">
-                      <label className="text-xs font-bold text-slate-700 flex items-center gap-1">
-                        <User className="h-3.5 w-3.5 text-slate-500" />
-                        Nom du Chauffeur
-                      </label>
-                      {drivers.length > 0 && (
-                        <span className="text-[11px] text-blue-600">ou liste déroulante</span>
-                      )}
-                    </div>
-                    <div className="flex gap-2">
-                      <input
-                        type="text"
-                        placeholder="Ex: Mohamed Kaci"
-                        value={driverName}
-                        onChange={(e) => setDriverName(e.target.value)}
-                        className="w-full px-3.5 py-2 bg-white border border-slate-300 rounded-lg text-sm font-medium text-slate-900 placeholder:text-slate-400 focus:outline-none focus:ring-2 focus:ring-blue-500 focus:border-transparent transition-all shadow-2xs"
-                      />
-                      {drivers.length > 0 && (
-                        <select
-                          value={driverId}
-                          onChange={(e) => handleDriverSelect(e.target.value)}
-                          className="px-2 py-2 bg-slate-50 hover:bg-slate-100 text-slate-700 text-xs font-semibold border border-slate-300 rounded-lg shadow-2xs cursor-pointer focus:outline-none shrink-0 max-w-[130px]"
-                          title="Choisir parmi les chauffeurs existants"
-                        >
-                          <option value="">Sélection...</option>
-                          {drivers.map(d => (
-                            <option key={d.id} value={d.id}>{d.name}</option>
-                          ))}
-                        </select>
-                      )}
-                    </div>
-                  </div>
-
-                  {/* Téléphone Chauffeur */}
-                  <div className="space-y-1.5">
-                    <label className="text-xs font-bold text-slate-700 flex items-center gap-1">
-                      <Phone className="h-3.5 w-3.5 text-slate-500" />
-                      Numéro de Téléphone
-                    </label>
-                    <input
-                      type="text"
-                      placeholder="Ex: 0550 12 34 56"
-                      value={driverPhone}
-                      onChange={(e) => setDriverPhone(e.target.value)}
-                      className="w-full px-3.5 py-2 bg-white border border-slate-300 rounded-lg text-sm font-mono font-medium text-slate-900 placeholder:text-slate-400 focus:outline-none focus:ring-2 focus:ring-blue-500 focus:border-transparent transition-all shadow-2xs"
-                    />
-                  </div>
-
-                </div>
-              </div>
-
-              {/* Section 3: Options commerciales & Statut */}
-              <div className="space-y-4 pt-2">
-                <h2 className="text-sm font-bold text-slate-800 uppercase tracking-wider border-b border-slate-100 pb-2">
-                  Options & Statut
-                </h2>
-
-                <div className="grid grid-cols-1 sm:grid-cols-3 gap-4">
-                  
-                  {/* Camion Favori */}
-                  <div className={`p-3.5 rounded-xl border flex items-center transition-all ${
-                    isFavorite 
-                      ? 'bg-amber-50/80 border-amber-300 shadow-2xs' 
-                      : 'bg-slate-50 border-slate-200 hover:border-slate-300'
-                  }`}>
-                    <label className="flex items-center gap-3 text-xs font-bold text-slate-800 cursor-pointer select-none w-full">
-                      <input
-                        type="checkbox"
-                        checked={isFavorite}
-                        onChange={(e) => setIsFavorite(e.target.checked)}
-                        className="h-4 w-4 text-amber-600 rounded border-amber-300 focus:ring-amber-500 cursor-pointer"
-                      />
-                      <div className="flex-1">
-                        <span className="flex items-center gap-1.5 text-amber-950 font-black">
-                          <Star className={`h-3.5 w-3.5 ${isFavorite ? 'fill-amber-500 text-amber-500' : 'text-amber-400'}`} />
-                          Camion favori
-                        </span>
-                        <p className="text-[10.5px] text-amber-900/80 font-normal leading-tight mt-0.5">
-                          S'affiche dans les camions favoris en Bon de Livraison
-                        </p>
-                      </div>
-                    </label>
-                  </div>
-
-                  {/* Accorder remise */}
-                  <div className="p-3.5 bg-slate-50 rounded-xl border border-slate-200 space-y-2">
-                    <label className="text-xs font-bold text-slate-800 block">
-                      Accorder une Remise
-                    </label>
-                    <div className="flex items-center gap-4">
-                      <label className="flex items-center gap-1.5 text-xs font-semibold text-slate-700 cursor-pointer select-none">
-                        <input
-                          type="radio"
-                          name="allowDiscount"
-                          checked={allowDiscount === true}
-                          onChange={() => setAllowDiscount(true)}
-                          className="w-4 h-4 text-blue-600 focus:ring-blue-500 cursor-pointer"
-                        />
-                        <span>Oui</span>
-                      </label>
-                      <label className="flex items-center gap-1.5 text-xs font-semibold text-slate-700 cursor-pointer select-none">
-                        <input
-                          type="radio"
-                          name="allowDiscount"
-                          checked={allowDiscount === false}
-                          onChange={() => setAllowDiscount(false)}
-                          className="w-4 h-4 text-blue-600 focus:ring-blue-500 cursor-pointer"
-                        />
-                        <span>Non</span>
-                      </label>
-                    </div>
-                  </div>
-
-                  {/* Camion Actif */}
-                  <div className="p-3.5 bg-slate-50 rounded-xl border border-slate-200 flex items-center">
-                    <label className="flex items-center gap-3 text-xs font-bold text-slate-800 cursor-pointer select-none">
-                      <input
-                        type="checkbox"
-                        checked={active}
-                        onChange={(e) => setActive(e.target.checked)}
-                        className="h-4 w-4 text-blue-600 rounded border-slate-300 focus:ring-blue-500 cursor-pointer"
-                      />
-                      <div>
-                        <span>Camion Actif en service</span>
-                        <p className="text-[11px] text-slate-500 font-normal leading-tight mt-0.5">
-                          Visible lors de la sélection des camions
-                        </p>
-                      </div>
-                    </label>
-                  </div>
-
-                </div>
-              </div>
-
+              <span className="px-2 py-0.5 text-[10px] font-mono font-black bg-blue-100 text-blue-800 rounded">
+                Pont-Bascule
+              </span>
             </div>
 
-            {/* Right Column: Photo Area & Quick Summary (4 cols) */}
-            <div className="lg:col-span-4 space-y-4">
-              
-              <div className="p-4 bg-slate-50/80 rounded-xl border border-slate-200 space-y-3">
-                <h3 className="text-xs font-bold text-slate-800 uppercase tracking-wider flex items-center justify-between">
-                  <span>Photo du Camion</span>
-                  <Camera className="h-3.5 w-3.5 text-slate-400" />
-                </h3>
+            <div className="grid grid-cols-1 sm:grid-cols-2 gap-3.5">
+              {/* Matricule */}
+              <div>
+                <label className="text-xs font-bold text-slate-700 block mb-1">
+                  Matricule Camion <span className="text-red-500">*</span>
+                </label>
+                <input
+                  type="text"
+                  required
+                  autoFocus
+                  placeholder="Ex: 000082 25 26"
+                  value={matricule}
+                  onChange={(e) => setMatricule(e.target.value.toUpperCase())}
+                  className="w-full px-3 py-2 bg-white border border-slate-300 rounded-lg text-xs font-mono font-black text-slate-950 focus:outline-none focus:ring-2 focus:ring-blue-500 shadow-2xs placeholder:font-normal"
+                />
+              </div>
 
+              {/* Marque / Modèle */}
+              <div>
+                <label className="text-xs font-bold text-slate-700 block mb-1">
+                  Marque / Modèle
+                </label>
+                <input
+                  type="text"
+                  placeholder="Ex: Renault Kerax 440, Shacman..."
+                  value={brand}
+                  onChange={(e) => setBrand(e.target.value)}
+                  className="w-full px-3 py-2 bg-white border border-slate-300 rounded-lg text-xs text-slate-900 focus:outline-none focus:ring-2 focus:ring-blue-500 shadow-2xs"
+                />
+              </div>
+
+              {/* Tare fixe (Poids à vide) */}
+              <div>
+                <div className="flex items-center justify-between mb-1">
+                  <label className="text-xs font-bold text-slate-700">
+                    Tare Fixe (T) <span className="text-red-500">*</span>
+                  </label>
+                  <span className="text-[10px] text-blue-600 font-bold">Poids à vide</span>
+                </div>
+                <div className="relative">
+                  <input
+                    type="number"
+                    step="0.01"
+                    min="0"
+                    required
+                    placeholder="0.00"
+                    value={tare}
+                    onChange={(e) => setTare(e.target.value)}
+                    className="w-full px-3 py-2 bg-blue-50/60 border border-blue-300 rounded-lg text-xs font-mono font-black text-blue-950 focus:outline-none focus:ring-2 focus:ring-blue-500 pr-8 shadow-2xs"
+                  />
+                  <span className="absolute right-2.5 top-1/2 -translate-y-1/2 text-xs font-black text-blue-700 pointer-events-none">
+                    T
+                  </span>
+                </div>
+              </div>
+
+              {/* Mn Tonne */}
+              <div>
+                <div className="flex items-center justify-between mb-1">
+                  <label className="text-xs font-bold text-slate-700">
+                    Mn Tonne (T)
+                  </label>
+                  <span className="text-[10px] text-slate-400">Charge min.</span>
+                </div>
+                <div className="relative">
+                  <input
+                    type="number"
+                    step="0.01"
+                    min="0"
+                    placeholder="0.00"
+                    value={mnTonne}
+                    onChange={(e) => setMnTonne(e.target.value)}
+                    className="w-full px-3 py-2 bg-white border border-slate-300 rounded-lg text-xs font-mono font-semibold text-slate-900 focus:outline-none focus:ring-2 focus:ring-blue-500 pr-8 shadow-2xs"
+                  />
+                  <span className="absolute right-2.5 top-1/2 -translate-y-1/2 text-xs font-bold text-slate-400 pointer-events-none">
+                    T
+                  </span>
+                </div>
+              </div>
+
+              {/* Volume Benne */}
+              <div className="sm:col-span-2">
+                <div className="flex items-center justify-between mb-1">
+                  <label className="text-xs font-bold text-slate-700">
+                    Volume Benne (m³)
+                  </label>
+                  <span className="text-[10px] text-slate-400">Pour conversion cubage / tonnage</span>
+                </div>
+                <div className="relative">
+                  <input
+                    type="number"
+                    step="0.1"
+                    min="0"
+                    placeholder="Ex: 16.0 ou 22.0"
+                    value={volumeM3}
+                    onChange={(e) => setVolumeM3(e.target.value)}
+                    className="w-full px-3 py-2 bg-white border border-slate-300 rounded-lg text-xs font-mono font-semibold text-slate-900 focus:outline-none focus:ring-2 focus:ring-blue-500 pr-9 shadow-2xs"
+                  />
+                  <span className="absolute right-3 top-1/2 -translate-y-1/2 text-xs font-bold text-slate-500 pointer-events-none">
+                    m³
+                  </span>
+                </div>
+              </div>
+            </div>
+
+            {/* Quick Favorites & Status inside truck card */}
+            <div className="pt-3 border-t border-slate-100 flex flex-wrap items-center justify-between gap-3">
+              <label className="flex items-center gap-2 text-xs font-bold text-slate-800 cursor-pointer select-none">
+                <input
+                  type="checkbox"
+                  checked={isFavorite}
+                  onChange={(e) => setIsFavorite(e.target.checked)}
+                  className="h-4 w-4 text-amber-500 rounded border-amber-300 focus:ring-amber-400 cursor-pointer"
+                />
+                <span className="flex items-center gap-1 text-slate-800 font-bold">
+                  <Star className={`h-3.5 w-3.5 ${isFavorite ? 'fill-amber-500 text-amber-500' : 'text-slate-400'}`} />
+                  Camion Favori (accès rapide pont-bascule)
+                </span>
+              </label>
+
+              <label className="flex items-center gap-2 text-xs font-bold text-slate-700 cursor-pointer select-none">
+                <input
+                  type="checkbox"
+                  checked={active}
+                  onChange={(e) => setActive(e.target.checked)}
+                  className="h-4 w-4 text-blue-600 rounded border-slate-300 focus:ring-blue-500 cursor-pointer"
+                />
+                <span>En service (Actif)</span>
+              </label>
+            </div>
+          </div>
+
+          {/* SECTION 2: CHAUFFEUR ATTITRÉ (INTÉGRÉ) (5 cols) */}
+          <div className="lg:col-span-5 bg-linear-to-b from-slate-50 to-white p-4 sm:p-5 rounded-xl border border-slate-200 shadow-2xs space-y-4">
+            
+            <div className="flex items-center justify-between border-b border-slate-200 pb-3">
+              <div className="flex items-center gap-2">
+                <div className="p-1.5 bg-emerald-100 text-emerald-800 rounded-lg">
+                  <UserCheck className="h-4 w-4 text-emerald-700" />
+                </div>
+                <div>
+                  <h2 className="text-xs sm:text-sm font-bold text-slate-900 uppercase tracking-tight">
+                    2. Chauffeur Attitré
+                  </h2>
+                  <p className="text-[11px] text-slate-500">
+                    Conducteur régulier & coordonnées directes
+                  </p>
+                </div>
+              </div>
+              <span className="px-2 py-0.5 text-[10px] font-bold bg-emerald-100 text-emerald-800 rounded flex items-center gap-1">
+                <CheckCircle2 className="h-3 w-3" />
+                Intégré
+              </span>
+            </div>
+
+            <div className="space-y-3">
+              
+              {/* Nom du chauffeur avec autocomplete datalist */}
+              <div>
+                <div className="flex items-center justify-between mb-1">
+                  <label className="text-xs font-bold text-slate-700 flex items-center gap-1">
+                    <User className="h-3.5 w-3.5 text-slate-400" />
+                    Nom et Prénom du Chauffeur
+                  </label>
+                  {drivers.length > 0 && (
+                    <span className="text-[10px] text-slate-400">
+                      ({drivers.length} enregistré{drivers.length > 1 ? 's' : ''})
+                    </span>
+                  )}
+                </div>
+                
+                <div className="relative">
+                  <input
+                    type="text"
+                    list="drivers-datalist"
+                    placeholder="Tapez un nom ou sélectionnez..."
+                    value={driverName}
+                    onChange={(e) => handleDriverChange(e.target.value)}
+                    className="w-full px-3 py-2 bg-white border border-slate-300 rounded-lg text-xs font-bold text-slate-900 focus:outline-none focus:ring-2 focus:ring-emerald-500 shadow-2xs placeholder:font-normal"
+                  />
+                  <datalist id="drivers-datalist">
+                    {drivers.map(d => (
+                      <option key={d.id} value={d.name}>
+                        {d.phone ? `${d.name} (${d.phone})` : d.name}
+                      </option>
+                    ))}
+                  </datalist>
+                </div>
+              </div>
+
+              {/* Sélecteur rapide si chauffeurs existants */}
+              {drivers.length > 0 && (
+                <div className="flex items-center gap-2">
+                  <span className="text-[11px] font-semibold text-slate-500 shrink-0">
+                    Ou choisir :
+                  </span>
+                  <select
+                    value={driverId}
+                    onChange={(e) => handleSelectExistingDriver(e.target.value)}
+                    className="w-full px-2 py-1.5 bg-white text-slate-700 text-xs font-medium border border-slate-300 rounded-lg cursor-pointer focus:outline-none focus:ring-1 focus:ring-emerald-500 truncate"
+                  >
+                    <option value="">-- Sélectionner dans la liste existante --</option>
+                    {drivers.map(d => (
+                      <option key={d.id} value={d.id}>
+                        {d.name} {d.phone ? `• ${d.phone}` : ''}
+                      </option>
+                    ))}
+                  </select>
+                </div>
+              )}
+
+              {/* Téléphone Chauffeur */}
+              <div>
+                <label className="text-xs font-bold text-slate-700 flex items-center gap-1 mb-1">
+                  <Phone className="h-3.5 w-3.5 text-slate-400" />
+                  N° Téléphone / Mobile
+                </label>
+                <div className="relative">
+                  <input
+                    type="text"
+                    placeholder="Ex: 0550 12 34 56 / 0661 00 00 00"
+                    value={driverPhone}
+                    onChange={(e) => setDriverPhone(formatAlgerianMobileInput(e.target.value))}
+                    className="w-full px-3 py-2 bg-white border border-slate-300 rounded-lg text-xs font-mono font-medium text-slate-900 focus:outline-none focus:ring-2 focus:ring-emerald-500 shadow-2xs"
+                  />
+                </div>
+              </div>
+
+              {/* Permis / Pièce d'identité */}
+              <div className="grid grid-cols-1 sm:grid-cols-2 gap-2.5">
+                <div>
+                  <label className="text-xs font-bold text-slate-700 flex items-center gap-1 mb-1">
+                    <CreditCard className="h-3.5 w-3.5 text-slate-400" />
+                    Permis / CIN (Opt.)
+                  </label>
+                  <input
+                    type="text"
+                    placeholder="N° Permis..."
+                    value={driverLicense}
+                    onChange={(e) => setDriverLicense(e.target.value)}
+                    className="w-full px-3 py-2 bg-white border border-slate-300 rounded-lg text-xs font-mono text-slate-800 focus:outline-none focus:ring-2 focus:ring-emerald-500 shadow-2xs"
+                  />
+                </div>
+
+                <div>
+                  <label className="text-xs font-bold text-slate-700 flex items-center gap-1 mb-1">
+                    <FileText className="h-3.5 w-3.5 text-slate-400" />
+                    Remarque / Type
+                  </label>
+                  <input
+                    type="text"
+                    placeholder="Ex: Régulier, Client..."
+                    value={driverNotes}
+                    onChange={(e) => setDriverNotes(e.target.value)}
+                    className="w-full px-3 py-2 bg-white border border-slate-300 rounded-lg text-xs text-slate-800 focus:outline-none focus:ring-2 focus:ring-emerald-500 shadow-2xs"
+                  />
+                </div>
+              </div>
+
+              <div className="p-2.5 bg-emerald-50/70 border border-emerald-200 rounded-lg text-[11px] text-emerald-900 leading-relaxed">
+                💡 <strong>Optimisation automatique :</strong> Le chauffeur saisi est synchronisé en temps réel et sera proposé automatiquement lors de la pesée des Bons de Livraison.
+              </div>
+            </div>
+          </div>
+
+        </div>
+
+        {/* Bottom Section: Commercial Options & Photo */}
+        <div className="bg-white p-4 sm:p-5 rounded-xl border border-slate-200 shadow-2xs space-y-4">
+          <div className="border-b border-slate-100 pb-2">
+            <h2 className="text-xs sm:text-sm font-bold text-slate-800 uppercase tracking-tight flex items-center gap-2">
+              <Camera className="h-4 w-4 text-indigo-600" />
+              Options Commerciales & Photo du Véhicule
+            </h2>
+          </div>
+
+          <div className="grid grid-cols-1 sm:grid-cols-12 gap-4 items-center">
+            
+            {/* Remise commerciale */}
+            <div className="sm:col-span-6 space-y-2">
+              <div className="p-3.5 bg-slate-50 rounded-xl border border-slate-200 space-y-2">
+                <label className="text-xs font-bold text-slate-800 block">
+                  Accorder une Remise commerciale sur ce camion ?
+                </label>
+                <div className="flex items-center gap-6">
+                  <label className="flex items-center gap-1.5 text-xs font-bold text-slate-700 cursor-pointer select-none">
+                    <input
+                      type="radio"
+                      name="allowDiscount"
+                      checked={allowDiscount === true}
+                      onChange={() => setAllowDiscount(true)}
+                      className="w-4 h-4 text-blue-600 focus:ring-blue-500 cursor-pointer"
+                    />
+                    <span>Oui (Autorisée en caisse/BL)</span>
+                  </label>
+                  <label className="flex items-center gap-1.5 text-xs font-bold text-slate-700 cursor-pointer select-none">
+                    <input
+                      type="radio"
+                      name="allowDiscount"
+                      checked={allowDiscount === false}
+                      onChange={() => setAllowDiscount(false)}
+                      className="w-4 h-4 text-blue-600 focus:ring-blue-500 cursor-pointer"
+                    />
+                    <span>Non (Prix standard)</span>
+                  </label>
+                </div>
+              </div>
+            </div>
+
+            {/* Photo du Camion */}
+            <div className="sm:col-span-6">
+              <div className="flex items-center gap-3">
                 <div 
                   onDragOver={(e) => e.preventDefault()}
                   onDrop={handleDropImage}
                   onClick={() => fileInputRef.current?.click()}
-                  className="relative group w-full h-44 bg-white rounded-xl border-2 border-dashed border-slate-300 hover:border-blue-500 overflow-hidden shadow-2xs cursor-pointer flex flex-col items-center justify-center transition-all"
-                  title="Cliquer ou glisser-déposer pour uploader une photo du camion"
+                  className="relative group w-32 h-20 bg-slate-100 rounded-xl border-2 border-dashed border-slate-300 hover:border-blue-500 overflow-hidden cursor-pointer flex flex-col items-center justify-center transition-all shrink-0"
+                  title="Cliquer ou glisser une photo"
                 >
                   {imageUrl ? (
                     <>
                       <img 
                         src={imageUrl} 
                         alt="Photo du camion" 
-                        className="w-full h-full object-cover group-hover:scale-105 transition-transform duration-300"
+                        className="w-full h-full object-cover" 
                       />
-                      <div className="absolute inset-0 bg-slate-900/60 opacity-0 group-hover:opacity-100 transition-opacity flex flex-col items-center justify-center text-white text-xs font-bold gap-1.5 backdrop-blur-2xs">
-                        <Upload className="h-5 w-5 text-blue-300" />
-                        <span>Changer la photo</span>
+                      <div className="absolute inset-0 bg-slate-900/60 opacity-0 group-hover:opacity-100 transition-opacity flex items-center justify-center text-white text-[10px] font-bold gap-1">
+                        <Upload className="h-3 w-3" />
+                        <span>Changer</span>
                       </div>
                     </>
                   ) : (
-                    <div className="flex flex-col items-center justify-center text-center p-4 text-slate-500 group-hover:text-blue-600">
-                      <div className="p-3 bg-blue-50 text-blue-600 rounded-full mb-2 group-hover:scale-110 transition-transform">
-                        <Camera className="h-6 w-6" />
-                      </div>
-                      <span className="text-xs font-bold block text-slate-800">Ajouter une photo</span>
-                      <span className="text-[11px] text-slate-400 mt-0.5">Glisser-déposer ou cliquer (max 5 Mo)</span>
+                    <div className="text-center p-2 text-slate-500">
+                      <Camera className="h-4 w-4 mx-auto text-slate-400 mb-0.5" />
+                      <span className="text-[10px] font-bold block text-slate-700">Photo</span>
                     </div>
                   )}
+                </div>
+
+                <div className="space-y-1.5 flex-1">
+                  <div className="text-xs font-bold text-slate-700">
+                    Photo d&apos;identification du camion
+                  </div>
+                  <p className="text-[11px] text-slate-400">
+                    Format PNG, JPG ou WebP (max 5 Mo). Affichée sur le pont-bascule.
+                  </p>
+                  <div className="flex items-center gap-2">
+                    <button
+                      type="button"
+                      onClick={() => fileInputRef.current?.click()}
+                      className="px-2.5 py-1 text-xs font-semibold text-blue-700 bg-blue-50 hover:bg-blue-100 rounded-lg cursor-pointer transition-colors border border-blue-200"
+                    >
+                      {imageUrl ? 'Modifier l’image' : 'Parcourir...'}
+                    </button>
+                    {imageUrl && (
+                      <button
+                        type="button"
+                        onClick={() => setImageUrl('')}
+                        className="px-2.5 py-1 text-xs font-semibold text-red-600 hover:text-red-700 bg-red-50 hover:bg-red-100 rounded-lg cursor-pointer transition-colors border border-red-200"
+                      >
+                        Supprimer
+                      </button>
+                    )}
+                  </div>
                 </div>
 
                 <input
@@ -523,84 +715,45 @@ export function TruckForm() {
                   onChange={handleImageChange}
                   className="hidden"
                 />
-
-                {imageUrl && (
-                  <button
-                    type="button"
-                    onClick={() => setImageUrl('')}
-                    className="w-full py-1.5 text-xs font-semibold text-red-600 hover:text-red-700 bg-red-50 hover:bg-red-100 rounded-lg border border-red-200 text-center transition-colors cursor-pointer"
-                  >
-                    Supprimer la photo
-                  </button>
-                )}
               </div>
-
-              {/* Quick Info Box */}
-              <div className="p-4 bg-blue-50/60 rounded-xl border border-blue-100 space-y-2 text-xs text-blue-900">
-                <span className="font-bold block text-blue-950">Liaison Pont-Bascule</span>
-                <p className="text-[11px] text-blue-800/80 leading-relaxed">
-                  La tare renseignée sur cette fiche sera automatiquement pré-remplie et verrouillée lors de la pesée sur les bons de livraison.
-                </p>
-              </div>
-
             </div>
 
           </div>
+        </div>
 
-          {/* Action Buttons Bar */}
-          <div className="pt-4 border-t border-slate-200 flex flex-wrap items-center justify-between gap-3">
-            
-            {/* Delete button on the left if editing */}
-            <div>
-              {isEditing && (
-                <button
-                  type="button"
-                  onClick={() => setShowDeleteModal(true)}
-                  className="px-4 py-2 text-xs font-bold text-red-600 hover:text-red-700 bg-red-50 hover:bg-red-100 border border-red-200 rounded-lg flex items-center gap-1.5 transition-colors cursor-pointer"
-                >
-                  <Trash2 className="h-4 w-4" />
-                  Supprimer le camion
-                </button>
-              )}
-            </div>
+        {/* Bottom Actions Bar */}
+        <div className="flex items-center justify-between pt-2">
+          <button
+            type="button"
+            onClick={() => navigate('/logistics?tab=trucks')}
+            className="px-4 py-2 text-xs font-semibold text-slate-700 hover:text-slate-900 bg-white border border-slate-300 rounded-xl cursor-pointer hover:bg-slate-50 transition-colors shadow-2xs"
+          >
+            Annuler
+          </button>
 
-            {/* Right action buttons: Annuler + Valider */}
-            <div className="flex items-center gap-3">
-              <button
-                type="button"
-                onClick={() => navigate('/logistics?tab=trucks')}
-                className="px-4 py-2 text-xs font-bold text-slate-700 hover:text-slate-900 bg-white hover:bg-slate-100 border border-slate-300 rounded-lg transition-colors cursor-pointer shadow-2xs"
-              >
-                Annuler / Quitter
-              </button>
+          <button
+            type="submit"
+            disabled={isSubmitting}
+            className="px-6 py-2.5 text-xs font-bold text-white bg-blue-600 hover:bg-blue-700 disabled:opacity-50 rounded-xl flex items-center gap-2 shadow-sm cursor-pointer transition-all"
+          >
+            <Save className="h-4 w-4" />
+            <span>{isSubmitting ? 'Enregistrement en cours...' : 'Enregistrer le Camion & Chauffeur'}</span>
+          </button>
+        </div>
 
-              <button
-                type="submit"
-                disabled={isSubmitting}
-                className="px-6 py-2 bg-blue-600 hover:bg-blue-700 text-white text-xs font-bold rounded-lg shadow-sm flex items-center gap-2 cursor-pointer transition-all active:scale-95 disabled:opacity-50"
-              >
-                <Check className="h-4 w-4 stroke-[2.5]" />
-                {isEditing ? 'Enregistrer les modifications' : 'Valider & Enregistrer'}
-              </button>
-            </div>
-
-          </div>
-
-        </form>
-
-      </div>
+      </form>
 
       {/* Delete Confirmation Modal */}
       {showDeleteModal && (
         <div className="fixed inset-0 z-50 bg-slate-950/80 backdrop-blur-xs flex items-center justify-center p-4">
-          <div className="bg-white rounded-2xl border border-red-200 max-w-sm w-full p-6 space-y-4 shadow-2xl">
+          <div className="bg-white rounded-2xl border border-red-200 max-w-sm w-full p-6 space-y-4 shadow-2xl animate-in zoom-in-95 duration-150">
             <div className="flex items-center gap-3 text-red-600">
-              <div className="p-2 bg-red-100 rounded-xl">
+              <div className="p-2.5 bg-red-100 rounded-xl">
                 <Trash2 className="h-6 w-6" />
               </div>
-              <h3 className="font-bold text-lg text-slate-900">Supprimer le camion ?</h3>
+              <h3 className="font-bold text-base text-slate-900">Supprimer le camion ?</h3>
             </div>
-            <p className="text-xs text-slate-600">
+            <p className="text-xs text-slate-600 leading-relaxed">
               Êtes-vous sûr de vouloir supprimer définitivement le camion matricule <strong className="font-mono text-slate-900">{matricule}</strong> ?
             </p>
             <div className="flex justify-end gap-2 pt-2">
@@ -626,4 +779,3 @@ export function TruckForm() {
     </div>
   );
 }
-

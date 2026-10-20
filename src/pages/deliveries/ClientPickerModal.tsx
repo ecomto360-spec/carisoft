@@ -2,6 +2,7 @@ import { useState, useMemo } from 'react';
 import { Customer } from '../../types';
 import { formatCurrency } from '../../lib/utils';
 import { Search, X, Check, User } from 'lucide-react';
+import { useDebounce } from '../../hooks/useDebounce';
 
 interface ClientPickerModalProps {
   isOpen: boolean;
@@ -21,12 +22,14 @@ export function ClientPickerModal({
   companyName = 'SARL MAHAJIR SIDAR - CARRIERE D\'AGREGATS'
 }: ClientPickerModalProps) {
   const [search, setSearch] = useState('');
+  const debouncedSearch = useDebounce(search, 200);
   const [highlightedId, setHighlightedId] = useState<string>(selectedCustomerId || (customers[0]?.id || ''));
 
   const filteredCustomers = useMemo(() => {
+    const q = debouncedSearch.toLowerCase().trim();
+    if (!q) return customers.slice(0, 50);
+
     return customers.filter(c => {
-      const q = search.toLowerCase().trim();
-      if (!q) return true;
       return (
         c.code.toLowerCase().includes(q) ||
         c.name.toLowerCase().includes(q) ||
@@ -34,7 +37,11 @@ export function ClientPickerModal({
         (c.familyId && c.familyId.toLowerCase().includes(q))
       );
     });
-  }, [customers, search]);
+  }, [customers, debouncedSearch]);
+
+  const displayedCustomers = useMemo(() => {
+    return filteredCustomers.slice(0, 30);
+  }, [filteredCustomers]);
 
   if (!isOpen) return null;
 
@@ -107,14 +114,14 @@ export function ClientPickerModal({
               </tr>
             </thead>
             <tbody className="divide-y divide-slate-200 bg-white">
-              {filteredCustomers.length === 0 ? (
+              {displayedCustomers.length === 0 ? (
                 <tr>
                   <td colSpan={4} className="py-8 text-center text-slate-400 italic">
                     Aucun client trouvé pour &quot;{search}&quot;
                   </td>
                 </tr>
               ) : (
-                filteredCustomers.map((cust) => {
+                displayedCustomers.map((cust) => {
                   const isSelected = cust.id === highlightedId;
                   const balance = cust.balance || 0;
                   return (

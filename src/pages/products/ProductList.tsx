@@ -1,4 +1,4 @@
-import { useState } from 'react';
+import { useState, useEffect } from 'react';
 import { useNavigate } from 'react-router-dom';
 import { useLiveQuery } from 'dexie-react-hooks';
 import { db } from '../../db/db';
@@ -30,9 +30,31 @@ export function ProductList() {
   const productPrices = useLiveQuery(() => db.productPrices.where('companyId').equals(currentCompanyId).filter(x => x.companyId === currentCompanyId).toArray());
   const families = useLiveQuery(() => db.productFamilies.filter(x  => (!x .companyId || x .companyId === currentCompanyId) && x.companyId === currentCompanyId).toArray());
 
-  const getPrice = (productId: string, conventionId: string) => {
+  // Purge old conventions on mount
+  useEffect(() => {
+    const purgeOldConventions = async () => {
+      try {
+        const allConvs = await db.conventions.toArray();
+        const oldIds = allConvs.filter(c => c.id !== 'C_CONV1').map(c => c.id);
+        if (oldIds.length > 0) {
+          await db.conventions.bulkDelete(oldIds);
+        }
+        await db.conventions.put({
+          id: 'C_CONV1',
+          name: 'Tarif Standard',
+          description: 'Tarif standard de vente',
+          familyId: 'CONV1'
+        });
+      } catch (e) {
+        console.error('Error purging conventions', e);
+      }
+    };
+    purgeOldConventions();
+  }, []);
 
-    const pp = productPrices?.find(p => p.productId === productId && p.conventionId === conventionId);
+  const getPrice = (productId: string) => {
+    const pp = productPrices?.find(p => p.productId === productId && p.conventionId === 'C_CONV1') ||
+      productPrices?.find(p => p.productId === productId);
     return pp ? pp.priceHT : null;
   };
 
@@ -55,7 +77,7 @@ export function ProductList() {
       <div className="flex flex-col sm:flex-row justify-between items-start sm:items-center gap-4">
         <div>
           <h1 className="text-2xl font-bold text-slate-800">Produits & Tarifs</h1>
-          <p className="text-slate-500">Grille tarifaire par produit et convention</p>
+          <p className="text-slate-500">Catalogue des agrégats et grille du tarif standard de vente</p>
         </div>
         
         <div className="flex flex-wrap items-center gap-2.5">
@@ -105,58 +127,52 @@ export function ProductList() {
                 <TableHead>Désignation</TableHead>
                 <TableHead>Famille</TableHead>
                 <TableHead>Unité</TableHead>
-                {conventions?.map(conv => (
-                  <TableHead key={conv.id} className="text-right whitespace-nowrap">
-                    {conv.name}
-                  </TableHead>
-                ))}
+                <TableHead className="text-right whitespace-nowrap">Tarif Standard (HT)</TableHead>
                 <TableHead className="text-right">Actions</TableHead>
               </TableRow>
             </TableHeader>
             <tbody>
-              {products?.map((product) => (
-                <TableRow key={product.id}>
-                  <TableCell className="font-mono font-medium text-slate-700">{product.code}</TableCell>
-                  <TableCell className="font-semibold text-slate-900">{product.name}</TableCell>
-                  <TableCell>
-                    <span className="px-2 py-0.5 bg-blue-50 text-blue-700 rounded-md text-xs font-semibold uppercase">
-                      {getFamilyName(product.familyId)}
-                    </span>
-                  </TableCell>
-                  <TableCell>
-                    <span className="px-2 py-0.5 bg-emerald-50 text-emerald-700 rounded-md text-xs font-semibold">
-                      {product.unit}
-                    </span>
-                  </TableCell>
-                  {conventions?.map(conv => {
-                    const price = getPrice(product.id, conv.id);
-                    return (
-                      <TableCell key={conv.id} className="text-right font-mono">
-                        {price !== null ? formatCurrency(price) : '-'}
-                      </TableCell>
-                    );
-                  })}
-                  <TableCell className="text-right">
-                    <div className="flex justify-end gap-2">
-                      <Button variant="ghost" size="sm" onClick={() => navigate(product.id)} title="Modifier" className="cursor-pointer">
-                        <Edit className="h-4 w-4 text-slate-500" />
-                      </Button>
-                      <Button 
-                        variant="ghost" 
-                        size="sm" 
-                        onClick={() => setProductToDelete({ id: product.id, name: product.name, code: product.code })} 
-                        title="Supprimer"
-                        className="cursor-pointer text-red-500 hover:bg-red-50"
-                      >
-                        <Trash2 className="h-4 w-4 text-red-500" />
-                      </Button>
-                    </div>
-                  </TableCell>
-                </TableRow>
-              ))}
+              {products?.map((product) => {
+                const price = getPrice(product.id);
+                return (
+                  <TableRow key={product.id}>
+                    <TableCell className="font-mono font-medium text-slate-700">{product.code}</TableCell>
+                    <TableCell className="font-semibold text-slate-900">{product.name}</TableCell>
+                    <TableCell>
+                      <span className="px-2 py-0.5 bg-blue-50 text-blue-700 rounded-md text-xs font-semibold uppercase">
+                        {getFamilyName(product.familyId)}
+                      </span>
+                    </TableCell>
+                    <TableCell>
+                      <span className="px-2 py-0.5 bg-emerald-50 text-emerald-700 rounded-md text-xs font-semibold">
+                        {product.unit}
+                      </span>
+                    </TableCell>
+                    <TableCell className="text-right font-mono font-bold text-slate-900">
+                      {price !== null ? formatCurrency(price) : '-'}
+                    </TableCell>
+                    <TableCell className="text-right">
+                      <div className="flex justify-end gap-2">
+                        <Button variant="ghost" size="sm" onClick={() => navigate(product.id)} title="Modifier" className="cursor-pointer">
+                          <Edit className="h-4 w-4 text-slate-500" />
+                        </Button>
+                        <Button 
+                          variant="ghost" 
+                          size="sm" 
+                          onClick={() => setProductToDelete({ id: product.id, name: product.name, code: product.code })} 
+                          title="Supprimer"
+                          className="cursor-pointer text-red-500 hover:bg-red-50"
+                        >
+                          <Trash2 className="h-4 w-4 text-red-500" />
+                        </Button>
+                      </div>
+                    </TableCell>
+                  </TableRow>
+                );
+              })}
               {products?.length === 0 && (
                 <TableRow>
-                  <TableCell colSpan={(conventions?.length || 0) + 5} className="text-center py-8 text-slate-500">
+                  <TableCell colSpan={6} className="text-center py-8 text-slate-500">
                     Aucun produit trouvé
                   </TableCell>
                 </TableRow>

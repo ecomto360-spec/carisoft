@@ -79,9 +79,9 @@ export function DemoLoginPage() {
         
         {/* Brand */}
         <div className="space-y-2">
-          <div className="inline-flex items-center justify-center gap-2 px-4 py-1.5 rounded-full border border-amber-500/40 bg-amber-500/10 text-amber-300 text-xs font-semibold tracking-wide">
-            <Sparkles className="h-4 w-4 text-amber-400" />
-            ACCÈS DÉMO DIRECT SANS MOT DE PASSE
+          <div className="inline-flex items-center justify-center gap-2 px-4 py-1.5 rounded-full border border-emerald-500/40 bg-emerald-500/10 text-emerald-300 text-xs font-semibold tracking-wide">
+            <Sparkles className="h-4 w-4 text-emerald-400" />
+            ACCÈS ÉVALUATION & AUDIT — 3 MOIS OFFERTS
           </div>
           
           <h1 className="text-4xl font-extrabold tracking-tight text-white flex items-center justify-center gap-2 pt-2">

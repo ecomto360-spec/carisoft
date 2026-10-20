@@ -53,8 +53,17 @@ export async function launchDemoSession(): Promise<User> {
     if (settings && (settings as any).companyId) {
       targetCompanyId = (settings as any).companyId;
     }
+
+    // Set 3 months (90 days) free audit & evaluation license
+    const expiryDate = new Date(Date.now() + 90 * 24 * 60 * 60 * 1000).toISOString();
+    await db.settings.update(1, {
+      licensePlan: "SaaS Entreprise (Accès Audit 3 Mois)",
+      licenseExpiry: expiryDate,
+      licenseStatus: 'active',
+      licenseKey: 'AUDIT-3MONTHS-FREE-EVALUATION-KEY'
+    });
   } catch (e) {
-    console.warn('Could not read settings for demo company', e);
+    console.warn('Could not read/update settings for demo company', e);
   }
 
   const demoUser: User = {
@@ -69,10 +78,11 @@ export async function launchDemoSession(): Promise<User> {
     console.warn('Could not persist demo user in db.users', e);
   }
 
-  // 4. Mark demo session flags
+  // 4. Mark demo session flags & active license key
   try {
     sessionStorage.setItem(DEMO_SESSION_KEY, 'true');
     localStorage.setItem(DEMO_SESSION_KEY, 'true');
+    localStorage.setItem(`carisoft_tenant_${targetCompanyId}_license_key`, 'AUDIT-3MONTHS-FREE-EVALUATION-KEY');
   } catch (e) {
     console.warn('Could not write demo session storage', e);
   }

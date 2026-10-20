@@ -9,6 +9,7 @@ import {
   downloadDriversTemplate,
   parseDriversFromExcel
 } from '../../lib/excelUtils';
+import { pushBatchToFirestore } from '../../lib/syncFirestore';
 import { Button } from '../ui/Button';
 import { 
   FileSpreadsheet, 
@@ -44,6 +45,7 @@ export function LogisticsExcelModal({
   const [activeTab, setActiveTab] = useState<'export' | 'import'>('export');
   const [file, setFile] = useState<File | null>(null);
   const [isProcessing, setIsProcessing] = useState(false);
+  const [importProgress, setImportProgress] = useState<{ current: number; total: number; percent: number } | null>(null);
   const [parsedTrucks, setParsedTrucks] = useState<Partial<Truck>[]>([]);
   const [parsedDrivers, setParsedDrivers] = useState<Partial<Driver>[]>([]);
   const [parseErrors, setParseErrors] = useState<string[]>([]);
@@ -66,6 +68,7 @@ export function LogisticsExcelModal({
     setIsProcessing(true);
     setParseErrors([]);
     setImportResult(null);
+    setImportProgress(null);
 
     try {
       if (selectedType === 'trucks') {
@@ -88,14 +91,32 @@ export function LogisticsExcelModal({
 
   const handleExecuteImport = async () => {
     setIsProcessing(true);
+    const totalToProcess = selectedType === 'trucks' ? parsedTrucks.length : parsedDrivers.length;
+    setImportProgress({ current: 0, total: totalToProcess, percent: 0 });
+
     try {
       let inserted = 0;
       let updated = 0;
+      const now = new Date().toISOString();
 
       if (selectedType === 'trucks') {
         if (parsedTrucks.length === 0) return;
         const existingTrucks = await db.trucks.where('companyId').equals(companyId).toArray();
         const existingDrivers = await db.drivers.where('companyId').equals(companyId).toArray();
+
+        // O(N) Maps
+        const truckByMatricule = new Map<string, Truck>();
+        existingTrucks.forEach(t => {
+          if (t.matricule) truckByMatricule.set(t.matricule.replace(/\s+/g, '').toUpperCase(), t);
+        });
+
+        const driverByName = new Map<string, Driver>();
+        existingDrivers.forEach(d => {
+          if (d.name) driverByName.set(d.name.toLowerCase().trim(), d);
+        });
+
+        const newDriversToSave: Driver[] = [];
+        const trucksToUpsert: Truck[] = [];
 
         for (const item of parsedTrucks) {
           if (!item.matricule) continue;
@@ -103,45 +124,45 @@ export function LogisticsExcelModal({
           // Check if driver exists or needs to be registered
           let driverId = '';
           if (item.driverName && item.driverName.trim() !== '') {
-            const foundDriver = existingDrivers.find(
-              (d) => d.name.toLowerCase() === item.driverName?.toLowerCase()
-            );
+            const cleanDName = item.driverName.toLowerCase().trim();
+            const foundDriver = driverByName.get(cleanDName);
             if (foundDriver) {
               driverId = foundDriver.id;
             } else {
-              // Create driver
-              const newDId = `D_${Date.now()}_${Math.random().toString(36).substr(2, 5)}`;
-              await db.drivers.add({
+              const newDId = `D_${Date.now()}_${Math.random().toString(36).substr(2, 6)}`;
+              const newDriverObj: Driver = {
                 id: newDId,
                 name: item.driverName.trim(),
                 phone: item.driverPhone || '',
                 active: true,
-              });
+                companyId: companyId,
+                createdAt: now,
+                updatedAt: now,
+              };
+              driverByName.set(cleanDName, newDriverObj);
+              newDriversToSave.push(newDriverObj);
               driverId = newDId;
-              existingDrivers.push({
-                id: newDId,
-                name: item.driverName.trim(),
-                phone: item.driverPhone || '',
-                active: true,
-              });
             }
           }
 
-          const match = existingTrucks.find(
-            (t) => t.matricule.replace(/\s+/g, '') === item.matricule?.replace(/\s+/g, '')
-          );
+          const cleanMatricule = item.matricule.replace(/\s+/g, '').toUpperCase();
+          const match = truckByMatricule.get(cleanMatricule);
 
           if (match) {
             if (importMode === 'merge') {
-              await db.trucks.update(match.id, {
+              const updatedTruck: Truck = {
+                ...match,
                 ...item,
+                id: match.id,
                 driverId: driverId || match.driverId,
                 companyId: companyId || match.companyId,
-              });
+                updatedAt: now,
+              };
+              trucksToUpsert.push(updatedTruck);
               updated++;
             }
           } else {
-            const newTId = `T_${Date.now()}_${Math.random().toString(36).substr(2, 5)}`;
+            const newTId = `T_${Date.now()}_${Math.random().toString(36).substr(2, 6)}`;
             const newTruck: Truck = {
               id: newTId,
               matricule: item.matricule,
@@ -156,10 +177,35 @@ export function LogisticsExcelModal({
               isFavorite: item.isFavorite || false,
               active: item.active !== false,
               companyId: companyId,
+              createdAt: now,
+              updatedAt: now,
             };
-            await db.trucks.add(newTruck);
+            trucksToUpsert.push(newTruck);
+            truckByMatricule.set(cleanMatricule, newTruck);
             inserted++;
           }
+        }
+
+        // Save newly discovered drivers
+        if (newDriversToSave.length > 0) {
+          await db.drivers.bulkPut(newDriversToSave);
+          if (companyId) {
+            pushBatchToFirestore('drivers', newDriversToSave, companyId).catch(console.warn);
+          }
+        }
+
+        // Bulk write trucks in chunks of 500
+        const CHUNK_SIZE = 500;
+        for (let i = 0; i < trucksToUpsert.length; i += CHUNK_SIZE) {
+          const chunk = trucksToUpsert.slice(i, i + CHUNK_SIZE);
+          await db.trucks.bulkPut(chunk);
+          const currentDone = Math.min(i + chunk.length, trucksToUpsert.length);
+          const pct = Math.round((currentDone / trucksToUpsert.length) * 100);
+          setImportProgress({
+            current: currentDone,
+            total: trucksToUpsert.length,
+            percent: pct,
+          });
         }
 
         setImportResult({
@@ -167,37 +213,73 @@ export function LogisticsExcelModal({
           updated,
           total: parsedTrucks.length,
         });
+
+        // Background sync to Firestore
+        if (companyId) {
+          pushBatchToFirestore('trucks', trucksToUpsert, companyId).catch((err) => {
+            console.warn('Background Firestore sync after trucks import:', err);
+          });
+        }
+
         setParsedTrucks([]);
       } else {
         // Drivers import
         if (parsedDrivers.length === 0) return;
         const existingDrivers = await db.drivers.where('companyId').equals(companyId).toArray();
+        const driverByName = new Map<string, Driver>();
+        existingDrivers.forEach(d => {
+          if (d.name) driverByName.set(d.name.toLowerCase().trim(), d);
+        });
+
+        const driversToUpsert: Driver[] = [];
 
         for (const item of parsedDrivers) {
-          if (!item.name) continue;
+          if (!item.name || String(item.name).trim() === '') continue;
 
-          const match = existingDrivers.find(
-            (d) => d.name.toLowerCase() === item.name?.toLowerCase()
-          );
+          const cleanName = item.name.toLowerCase().trim();
+          const match = driverByName.get(cleanName);
 
           if (match) {
             if (importMode === 'merge') {
-              await db.drivers.update(match.id, {
+              const updatedD: Driver = {
+                ...match,
                 ...item,
-              });
+                id: match.id,
+                companyId: companyId || match.companyId,
+                updatedAt: now,
+              };
+              driversToUpsert.push(updatedD);
               updated++;
             }
           } else {
-            const newDId = `D_${Date.now()}_${Math.random().toString(36).substr(2, 5)}`;
+            const newDId = `D_${Date.now()}_${Math.random().toString(36).substr(2, 6)}`;
             const newDriver: Driver = {
               id: newDId,
-              name: item.name,
+              name: item.name.trim(),
               phone: item.phone || '',
               active: item.active !== false,
+              companyId: companyId,
+              createdAt: now,
+              updatedAt: now,
             };
-            await db.drivers.add(newDriver);
+            driversToUpsert.push(newDriver);
+            driverByName.set(cleanName, newDriver);
             inserted++;
           }
+        }
+
+        // Bulk write drivers in chunks of 500
+        const CHUNK_SIZE = 500;
+        for (let i = 0; i < driversToUpsert.length; i += CHUNK_SIZE) {
+          const chunk = driversToUpsert.slice(i, i + CHUNK_SIZE);
+          await db.drivers.bulkPut(chunk);
+          const currentDone = Math.min(i + chunk.length, driversToUpsert.length);
+          const pct = Math.round((currentDone / driversToUpsert.length) * 100);
+          setImportProgress({
+            current: currentDone,
+            total: driversToUpsert.length,
+            percent: pct,
+          });
         }
 
         setImportResult({
@@ -205,6 +287,11 @@ export function LogisticsExcelModal({
           updated,
           total: parsedDrivers.length,
         });
+
+        if (companyId) {
+          pushBatchToFirestore('drivers', driversToUpsert, companyId).catch(console.warn);
+        }
+
         setParsedDrivers([]);
       }
 
@@ -213,6 +300,7 @@ export function LogisticsExcelModal({
       setParseErrors([err?.message || 'Erreur lors de l\'enregistrement en base de données.']);
     } finally {
       setIsProcessing(false);
+      setImportProgress(null);
     }
   };
 
@@ -222,6 +310,7 @@ export function LogisticsExcelModal({
     setParsedDrivers([]);
     setParseErrors([]);
     setImportResult(null);
+    setImportProgress(null);
     if (fileInputRef.current) {
       fileInputRef.current.value = '';
     }
@@ -461,8 +550,27 @@ export function LogisticsExcelModal({
                     </div>
                   </div>
 
+                  {/* Import Progress Bar */}
+                  {importProgress && (
+                    <div className="bg-blue-50 border border-blue-200 rounded-xl p-4 space-y-2">
+                      <div className="flex justify-between items-center text-xs font-bold text-blue-900">
+                        <span className="flex items-center gap-2">
+                          <RefreshCw className="h-4 w-4 animate-spin text-blue-600" />
+                          Écriture par lots en cours (chunks de 500)...
+                        </span>
+                        <span>{importProgress.current} / {importProgress.total} ({importProgress.percent}%)</span>
+                      </div>
+                      <div className="w-full bg-blue-200 rounded-full h-3 overflow-hidden">
+                        <div 
+                          className="bg-blue-600 h-3 rounded-full transition-all duration-200 ease-out"
+                          style={{ width: `${importProgress.percent}%` }}
+                        />
+                      </div>
+                    </div>
+                  )}
+
                   {/* Duplicate Resolution Options */}
-                  {currentParsedCount > 0 && (
+                  {currentParsedCount > 0 && !importProgress && (
                     <div className="bg-slate-50 p-4 rounded-xl border border-slate-200 space-y-3">
                       <div className="text-xs font-bold text-slate-700 uppercase tracking-wider">En cas d'élément existant :</div>
                       <div className="flex flex-wrap gap-4">
@@ -492,16 +600,22 @@ export function LogisticsExcelModal({
                     </div>
                   )}
 
-                  {/* Data Preview Table */}
-                  {selectedType === 'trucks' && parsedTrucks.length > 0 && (
+                  {/* Data Preview Table (Max 100 rows) */}
+                  {selectedType === 'trucks' && parsedTrucks.length > 0 && !importProgress && (
                     <div className="space-y-2">
                       <div className="flex justify-between items-center text-xs font-bold text-slate-600">
-                        <span>Aperçu des 5 premiers camions sur {parsedTrucks.length} :</span>
+                        <span>Aperçu {parsedTrucks.length > 100 ? 'des 100 premiers camions' : 'de la totalité'} sur {parsedTrucks.length} :</span>
+                        {parsedTrucks.length > 100 && (
+                          <span className="text-blue-600 bg-blue-50 px-2 py-0.5 rounded text-[11px]">
+                            Mode optimisé : DOM allégé
+                          </span>
+                        )}
                       </div>
-                      <div className="border border-slate-200 rounded-xl overflow-hidden overflow-x-auto max-h-48">
+                      <div className="border border-slate-200 rounded-xl overflow-hidden overflow-x-auto max-h-60">
                         <table className="w-full text-left text-xs">
-                          <thead className="bg-slate-100 text-slate-700 font-bold border-b border-slate-200">
+                          <thead className="bg-slate-100 text-slate-700 font-bold border-b border-slate-200 sticky top-0">
                             <tr>
+                              <th className="p-2.5">#</th>
                               <th className="p-2.5">Matricule</th>
                               <th className="p-2.5">Marque</th>
                               <th className="p-2.5 text-right">Tare (T)</th>
@@ -511,8 +625,9 @@ export function LogisticsExcelModal({
                             </tr>
                           </thead>
                           <tbody className="divide-y divide-slate-100">
-                            {parsedTrucks.slice(0, 5).map((row, idx) => (
+                            {parsedTrucks.slice(0, 100).map((row, idx) => (
                               <tr key={idx} className="hover:bg-slate-50">
+                                <td className="p-2.5 text-slate-400 font-mono">{idx + 1}</td>
                                 <td className="p-2.5 font-mono font-bold text-slate-800">{row.matricule}</td>
                                 <td className="p-2.5 text-slate-700">{row.brand || '-'}</td>
                                 <td className="p-2.5 text-right font-mono text-blue-700 font-bold">{row.tare?.toFixed(2)} T</td>
@@ -527,23 +642,30 @@ export function LogisticsExcelModal({
                     </div>
                   )}
 
-                  {selectedType === 'drivers' && parsedDrivers.length > 0 && (
+                  {selectedType === 'drivers' && parsedDrivers.length > 0 && !importProgress && (
                     <div className="space-y-2">
                       <div className="flex justify-between items-center text-xs font-bold text-slate-600">
-                        <span>Aperçu des 5 premiers chauffeurs sur {parsedDrivers.length} :</span>
+                        <span>Aperçu {parsedDrivers.length > 100 ? 'des 100 premiers chauffeurs' : 'de la totalité'} sur {parsedDrivers.length} :</span>
+                        {parsedDrivers.length > 100 && (
+                          <span className="text-blue-600 bg-blue-50 px-2 py-0.5 rounded text-[11px]">
+                            Mode optimisé : DOM allégé
+                          </span>
+                        )}
                       </div>
-                      <div className="border border-slate-200 rounded-xl overflow-hidden overflow-x-auto max-h-48">
+                      <div className="border border-slate-200 rounded-xl overflow-hidden overflow-x-auto max-h-60">
                         <table className="w-full text-left text-xs">
-                          <thead className="bg-slate-100 text-slate-700 font-bold border-b border-slate-200">
+                          <thead className="bg-slate-100 text-slate-700 font-bold border-b border-slate-200 sticky top-0">
                             <tr>
+                              <th className="p-2.5">#</th>
                               <th className="p-2.5">Nom et Prénom</th>
                               <th className="p-2.5">Téléphone</th>
                               <th className="p-2.5">Statut</th>
                             </tr>
                           </thead>
                           <tbody className="divide-y divide-slate-100">
-                            {parsedDrivers.slice(0, 5).map((row, idx) => (
+                            {parsedDrivers.slice(0, 100).map((row, idx) => (
                               <tr key={idx} className="hover:bg-slate-50">
+                                <td className="p-2.5 text-slate-400 font-mono">{idx + 1}</td>
                                 <td className="p-2.5 font-semibold text-slate-900">{row.name}</td>
                                 <td className="p-2.5 font-mono text-slate-600">{row.phone || '-'}</td>
                                 <td className="p-2.5 text-slate-600">{row.active ? 'Actif' : 'Inactif'}</td>

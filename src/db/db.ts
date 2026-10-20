@@ -1,14 +1,16 @@
 import Dexie, { type Table } from 'dexie';
 import type { 
-  CompanySettings, Customer, CustomerFamily, Convention, 
+  CompanySettings, Customer, CustomerFamily, CustomerActivity, Convention, 
   Product, ProductFamily, ProductUnit, ProductPrice, Truck, Driver, 
   Order, OrderItem,
-  DeliveryNote, DeliveryNoteItem, Invoice, InvoiceItem, Payment, User 
+  DeliveryNote, DeliveryNoteItem, Invoice, InvoiceItem, Payment, User,
+  LicenseStateRecord
 } from '../types';
 
 export class CarisoftDB extends Dexie {
   settings!: Table<CompanySettings, number>;
   customerFamilies!: Table<CustomerFamily, string>;
+  customerActivities!: Table<CustomerActivity, string>;
   conventions!: Table<Convention, string>;
   customers!: Table<Customer, string>;
   productFamilies!: Table<ProductFamily, string>;
@@ -25,14 +27,16 @@ export class CarisoftDB extends Dexie {
   invoiceItems!: Table<InvoiceItem, string>;
   payments!: Table<Payment, string>;
   users!: Table<User, string>;
+  licenseState!: Table<LicenseStateRecord, string>;
 
   constructor() {
     super('CarisoftDB');
-    this.version(6).stores({
+    this.version(7).stores({
       settings: 'id, companyId',
       customerFamilies: 'id, name, companyId',
+      customerActivities: 'id, name, code, companyId',
       conventions: 'id, familyId, companyId',
-      customers: 'id, code, name, familyId, active, companyId',
+      customers: 'id, code, name, familyId, activityId, wilaya, active, companyId',
       productFamilies: 'id, name, companyId',
       productUnits: 'id, code, name, companyId',
       products: 'id, code, name, familyId, active, companyId',
@@ -50,6 +54,34 @@ export class CarisoftDB extends Dexie {
     }).upgrade(tx => {
        // On upgrade, we might want to do something but version bump is enough to create indexes
     });
+
+    // Version 8: High-performance compound indexes for multi-tenant isolation, rapid sorting & sync
+    this.version(8).stores({
+      customers: 'id, code, name, familyId, activityId, wilaya, active, companyId, [companyId+active], [companyId+name], [companyId+code], [companyId+updatedAt], updatedAt',
+      trucks: 'id, matricule, active, companyId, [companyId+active], [companyId+matricule], [companyId+updatedAt], updatedAt',
+      drivers: 'id, name, active, companyId, [companyId+active], [companyId+name], [companyId+updatedAt], updatedAt',
+      deliveryNotes: 'id, number, date, customerId, truckId, status, invoiceId, companyId, [companyId+date], [companyId+number], [companyId+customerId], [companyId+truckId], [companyId+updatedAt], updatedAt',
+      products: 'id, code, name, familyId, active, companyId, [companyId+active], [companyId+name], [companyId+code], [companyId+updatedAt], updatedAt'
+    }).upgrade(async tx => {
+      const now = new Date().toISOString();
+      await tx.table('customers').toCollection().modify((c: any) => {
+        if (!c.updatedAt) c.updatedAt = c.createdAt || now;
+      });
+      await tx.table('trucks').toCollection().modify((t: any) => {
+        if (!t.updatedAt) t.updatedAt = t.createdAt || now;
+      });
+      await tx.table('drivers').toCollection().modify((d: any) => {
+        if (!d.updatedAt) d.updatedAt = d.createdAt || now;
+      });
+      await tx.table('deliveryNotes').toCollection().modify((dn: any) => {
+        if (!dn.updatedAt) dn.updatedAt = dn.createdAt || dn.date || now;
+      });
+    });
+
+    // Version 9: Table licenseState scopée par tenantId pour vérification hors-ligne et anti-triche horloge
+    this.version(9).stores({
+      licenseState: 'tenantId, key, status, lastSeenAt, [tenantId+status]'
+    });
   }
 }
 
@@ -61,15 +93,28 @@ export function setDbTenantId(tenantId: string | undefined) {
   currentCompanyId = tenantId;
 }
 
-// Inject companyId on all creations
+// Inject companyId and timestamps on all creations & updates
 db.on('ready', () => {
   db.tables.forEach(table => {
     // Only apply to tenant-specific tables
-    if (table.name !== 'users' && table.name !== 'settings') {
+    if (table.name !== 'users' && table.name !== 'settings' && table.name !== 'licenseState') {
       table.hook('creating', function (primKey, obj, transaction) {
         if (currentCompanyId && !obj.companyId) {
           obj.companyId = currentCompanyId;
         }
+        const now = new Date().toISOString();
+        if (!obj.createdAt) {
+          obj.createdAt = now;
+        }
+        if (!obj.updatedAt) {
+          obj.updatedAt = now;
+        }
+      });
+      table.hook('updating', function (modifications: any, primKey, obj, transaction) {
+        return {
+          ...modifications,
+          updatedAt: new Date().toISOString()
+        };
       });
     }
   });
@@ -88,6 +133,59 @@ export async function ensureDefaultUsersAndSettings() {
         { id: 'TOUTVENANT', name: 'TOUT-VENANT & BALLAST' },
         { id: 'CONCASSE', name: 'CONCASSÉ SPÉCIAL' }
       ]);
+    }
+
+    // Ensure customer activities exist
+    const actCount = await db.customerActivities.count();
+    if (actCount === 0) {
+      await db.customerActivities.bulkPut([
+        { id: 'ACT-ETB', code: 'ETB', name: 'ETB (Entreprise Travaux Bâtiment)', description: 'Entreprise générale de bâtiment et génie civil' },
+        { id: 'ACT-BETON', code: 'BETON', name: 'Centrale à Béton', description: 'Production et livraison de béton prêt à l\'emploi (BPE)' },
+        { id: 'ACT-BATIMENT', code: 'BAT', name: 'Construction Bâtiment', description: 'Entreprise de construction et maçonnerie' },
+        { id: 'ACT-TRANSP', code: 'TRANSP', name: 'Transporteur', description: 'Transport et logistique de matériaux' },
+        { id: 'ACT-ENROBAGE', code: 'ENROB', name: 'Poste d\'Enrobage', description: 'Centrale d\'enrobé et travaux routiers' },
+        { id: 'ACT-TP', code: 'TP', name: 'Travaux Publics (TP & Terrassement)', description: 'Terrassement, voirie et réseaux divers (VRD)' },
+        { id: 'ACT-GROSSISTE', code: 'GROSS', name: 'Grossiste & Revendeur Matériaux', description: 'Négoce et distribution d\'agrégats' },
+        { id: 'ACT-PART', code: 'PART', name: 'Particulier / Auto-constructeur', description: 'Client privé et chantiers individuels' },
+        { id: 'ACT-AUTRE', code: 'AUTRE', name: 'Autre Activité', description: 'Secteur divers' },
+      ]);
+    }
+
+    // Ensure only Tarif Standard exists and clean up old conventions
+    const oldConventions = await db.conventions.toArray();
+    const toDeleteIds = oldConventions
+      .filter(c => c.id !== 'C_CONV1' || c.name !== 'Tarif Standard')
+      .map(c => c.id);
+    
+    if (toDeleteIds.length > 0) {
+      await db.conventions.bulkDelete(toDeleteIds);
+    }
+
+    await db.conventions.put({
+      id: 'C_CONV1',
+      name: 'Tarif Standard',
+      description: 'Tarif standard général de vente',
+      familyId: 'CONV1'
+    });
+
+    // Customer Families
+    const oldFamilies = await db.customerFamilies.toArray();
+    const toDeleteFamIds = oldFamilies.filter(f => f.id !== 'CONV1').map(f => f.id);
+    if (toDeleteFamIds.length > 0) {
+      await db.customerFamilies.bulkDelete(toDeleteFamIds);
+    }
+    await db.customerFamilies.put({ id: 'CONV1', name: 'Tarif Standard' });
+
+    // Reassign any customers to Tarif Standard
+    const customersToMigrate = await db.customers.toArray();
+    const updates: Promise<any>[] = [];
+    customersToMigrate.forEach(c => {
+      if (c.familyId !== 'CONV1' || !c.type || c.type.includes('CONV')) {
+        updates.push(db.customers.update(c.id, { familyId: 'CONV1', type: 'Tarif Standard' }));
+      }
+    });
+    if (updates.length > 0) {
+      await Promise.all(updates);
     }
 
     // Ensure measurement units exist
@@ -208,23 +306,11 @@ export async function initDemoData() {
   });
 
   await db.customerFamilies.bulkPut([
-    { id: 'CONV1', name: 'CONV1' },
-    { id: 'CONV2', name: 'CONV2' },
-    { id: 'CONV3', name: 'CONV3' },
-    { id: 'CONV4', name: 'CONV4' },
-    { id: 'CONV6', name: 'CONV6' },
-    { id: 'CONV8', name: 'CONV8' },
-    { id: 'DIVERS', name: 'DIVERS' },
+    { id: 'CONV1', name: 'Tarif Standard' },
   ]);
 
   await db.conventions.bulkPut([
-    { id: 'C_CONV1', name: 'Convention Standard', description: '', familyId: 'CONV1' },
-    { id: 'C_CONV2', name: 'Convention Partenaire', description: '', familyId: 'CONV2' },
-    { id: 'C_CONV3', name: 'Convention Grossiste', description: '', familyId: 'CONV3' },
-    { id: 'C_CONV4', name: 'Convention Entreprise TP', description: '', familyId: 'CONV4' },
-    { id: 'C_CONV6', name: 'Convention Promoteur', description: '', familyId: 'CONV6' },
-    { id: 'C_CONV8', name: 'Convention Spéciale', description: '', familyId: 'CONV8' },
-    { id: 'C_DIVERS', name: 'Clients Divers', description: '', familyId: 'DIVERS' },
+    { id: 'C_CONV1', name: 'Tarif Standard', description: 'Tarif standard de vente', familyId: 'CONV1' },
   ]);
 
   await db.customers.bulkPut([

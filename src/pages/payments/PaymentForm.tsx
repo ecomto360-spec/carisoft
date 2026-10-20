@@ -108,73 +108,115 @@ export function PaymentForm() {
   };
 
   return (
-    <div className="space-y-6 max-w-3xl">
-      <div className="flex items-center gap-4">
-        <Button variant="ghost" onClick={() => navigate('/payments')}>
-          <ArrowLeft className="h-4 w-4" />
-        </Button>
-        <h1 className="text-2xl font-bold text-slate-800">Nouveau Règlement / Avance</h1>
+    <div className="space-y-4 max-w-3xl mx-auto pb-6">
+      {/* Header with Quick Action Buttons */}
+      <div className="flex flex-wrap items-center justify-between gap-3 bg-white p-3.5 rounded-xl border border-slate-200 shadow-2xs">
+        <div className="flex items-center gap-3">
+          <Button variant="ghost" size="sm" onClick={() => navigate('/payments')} className="cursor-pointer">
+            <ArrowLeft className="h-4 w-4" />
+          </Button>
+          <div>
+            <h1 className="text-base sm:text-lg font-bold text-slate-800">
+              {id ? 'Modifier le Règlement' : 'Nouveau Règlement / Avance'}
+            </h1>
+            <p className="text-[10px] text-slate-500">
+              Enregistrement des encaissements clients et affectation
+            </p>
+          </div>
+        </div>
+
+        <div className="flex items-center gap-2">
+          <Button variant="outline" size="sm" onClick={() => navigate('/payments')} className="text-xs cursor-pointer">
+            Annuler
+          </Button>
+          <Button onClick={handleSave} size="sm" className="bg-blue-600 hover:bg-blue-700 text-white font-bold text-xs shadow-xs cursor-pointer">
+            <Save className="h-3.5 w-3.5 mr-1" />
+            Enregistrer
+          </Button>
+        </div>
       </div>
 
-      <div className="bg-white p-6 rounded-xl border border-slate-200 shadow-sm space-y-6">
-        <div className="grid grid-cols-1 md:grid-cols-2 gap-6">
-          <Select 
-            label="Client *"
-            value={customerId}
-            onChange={(e) => {
-              setCustomerId(e.target.value);
-              setInvoiceId('');
-            }}
-            options={customers.map(c => ({ value: c.id, label: `${c.code} - ${c.name}` }))}
-          />
+      <div className="bg-white p-4 rounded-xl border border-slate-200 shadow-2xs space-y-4">
+        <div className="grid grid-cols-1 md:grid-cols-2 gap-4">
+          <div>
+            <Select 
+              label="Client *"
+              value={customerId}
+              onChange={(e) => {
+                setCustomerId(e.target.value);
+                setInvoiceId('');
+              }}
+              options={customers.map(c => ({ value: c.id, label: `${c.code} - ${c.name}` }))}
+              className="text-xs"
+            />
+          </div>
           
-          <div className="flex items-end pb-2">
-            <span className="text-sm text-slate-500 mr-2">Solde Actuel :</span>
-            <span className={`text-lg font-bold ${customerBalance < 0 ? 'text-red-600' : 'text-green-600'}`}>
+          <div className="flex items-center justify-between bg-slate-50 p-2.5 rounded-lg border border-slate-200">
+            <span className="text-xs font-bold text-slate-600">Solde Actuel :</span>
+            <span className={`text-base font-mono font-black ${customerBalance < 0 ? 'text-red-600' : 'text-emerald-600'}`}>
               {formatCurrency(customerBalance)}
             </span>
           </div>
 
-          <Select 
-            label="Affecter à la facture (Optionnel)"
-            value={invoiceId}
-            onChange={(e) => setInvoiceId(e.target.value)}
-            options={[
-              { value: '', label: 'Avance (Non affecté)' },
-              ...customerInvoices.map(i => ({ value: i.id, label: `${i.number} - Reste: ${formatCurrency(i.totalTTC)}` }))
-            ]}
-          />
+          <div>
+            <Select 
+              label="Affecter à la facture (Optionnel)"
+              value={invoiceId}
+              onChange={(e) => setInvoiceId(e.target.value)}
+              options={[
+                { value: '', label: 'Avance libre (Non affecté)' },
+                ...customerInvoices.map(i => ({ value: i.id, label: `${i.number} - Reste: ${formatCurrency(i.totalTTC)}` }))
+              ]}
+              className="text-xs"
+            />
+          </div>
 
-          <Input 
-            label="Montant (DZD) *" 
-            type="number"
-            value={amount}
-            onChange={(e) => setAmount(Number(e.target.value))}
-          />
+          <div>
+            <Input 
+              label="Montant du versement (DZD) *" 
+              type="number"
+              value={amount}
+              onChange={(e) => setAmount(Number(e.target.value))}
+              placeholder="0.00"
+              className="text-xs font-mono font-bold"
+            />
+          </div>
 
-          <Select 
-            label="Mode de paiement *"
-            value={mode}
-            onChange={(e) => setMode(e.target.value)}
-            options={[
-              { value: 'especes', label: 'Espèces' },
-              { value: 'cheque', label: 'Chèque' },
-              { value: 'virement', label: 'Virement' },
-            ]}
-          />
+          <div>
+            <Select 
+              label="Mode de paiement *"
+              value={mode}
+              onChange={(e) => setMode(e.target.value)}
+              options={[
+                { value: 'especes', label: 'Espèces' },
+                { value: 'cheque', label: 'Chèque' },
+                { value: 'virement', label: 'Virement' },
+              ]}
+              className="text-xs"
+            />
+          </div>
 
           {(mode === 'cheque' || mode === 'virement') && (
-            <Input 
-              label="Référence (N° Chèque / Virement) *" 
-              value={reference}
-              onChange={(e) => setReference(e.target.value)}
-            />
+            <div>
+              <Input 
+                label="Référence (N° Chèque / Virement) *" 
+                value={reference}
+                onChange={(e) => setReference(e.target.value)}
+                placeholder="Ex: CHQ-1234567..."
+                className="text-xs font-mono"
+              />
+            </div>
           )}
         </div>
 
-        <div className="flex justify-end gap-3 pt-4 border-t border-slate-100">
-          <Button variant="outline" onClick={() => navigate('/payments')}>Annuler</Button>
-          <Button onClick={handleSave}><Save className="h-4 w-4 mr-2" /> Enregistrer le versement</Button>
+        <div className="flex justify-between items-center pt-2 border-t border-slate-100">
+          <Button variant="outline" size="sm" onClick={() => navigate('/payments')} className="text-xs cursor-pointer">
+            Annuler
+          </Button>
+          <Button onClick={handleSave} size="sm" className="bg-blue-600 hover:bg-blue-700 text-white font-bold text-xs px-5 shadow-xs cursor-pointer">
+            <Save className="h-3.5 w-3.5 mr-1" />
+            Enregistrer le versement
+          </Button>
         </div>
       </div>
     </div>

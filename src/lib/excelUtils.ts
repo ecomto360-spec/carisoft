@@ -120,10 +120,47 @@ export function downloadClientsTemplate() {
   XLSX.writeFile(wb, 'Modele_Import_Clients_CARISOFT.xlsx');
 }
 
+// Helper to run parser in Web Worker if available, with sync fallback
+async function runWorkerParser<T>(type: 'parseClients' | 'parseTrucks' | 'parseDrivers', file: File): Promise<{ data: T[]; errors: string[] }> {
+  if (typeof Worker !== 'undefined') {
+    try {
+      const buffer = await file.arrayBuffer();
+      return await new Promise((resolve, reject) => {
+        const worker = new Worker(new URL('../workers/excelWorker.ts', import.meta.url), { type: 'module' });
+        worker.onmessage = (e) => {
+          worker.terminate();
+          if (e.data.success) {
+            resolve({ data: e.data.data, errors: e.data.errors });
+          } else {
+            reject(new Error(e.data.error || 'Erreur worker parsing'));
+          }
+        };
+        worker.onerror = (err) => {
+          worker.terminate();
+          reject(err);
+        };
+        worker.postMessage({ type, buffer }, [buffer]);
+      });
+    } catch (err) {
+      console.warn(`Web Worker parsing failed for ${type}, falling back to main thread:`, err);
+    }
+  }
+  return { data: [], errors: ['Worker non disponible'] };
+}
+
 export async function parseClientsFromExcel(file: File): Promise<{
   clients: Partial<Customer>[];
   errors: string[];
 }> {
+  try {
+    const workerRes = await runWorkerParser<Partial<Customer>>('parseClients', file);
+    if (workerRes.data && workerRes.data.length > 0) {
+      return { clients: workerRes.data, errors: workerRes.errors };
+    }
+  } catch (err) {
+    console.warn('Worker parse clients error, using sync:', err);
+  }
+
   return new Promise((resolve, reject) => {
     const reader = new FileReader();
     reader.onload = (e) => {
@@ -327,6 +364,15 @@ export async function parseTrucksFromExcel(file: File): Promise<{
   trucks: Partial<Truck>[];
   errors: string[];
 }> {
+  try {
+    const workerRes = await runWorkerParser<Partial<Truck>>('parseTrucks', file);
+    if (workerRes.data && workerRes.data.length > 0) {
+      return { trucks: workerRes.data, errors: workerRes.errors };
+    }
+  } catch (err) {
+    console.warn('Worker parse trucks error, using sync:', err);
+  }
+
   return new Promise((resolve, reject) => {
     const reader = new FileReader();
     reader.onload = (e) => {
@@ -469,6 +515,15 @@ export async function parseDriversFromExcel(file: File): Promise<{
   drivers: Partial<Driver>[];
   errors: string[];
 }> {
+  try {
+    const workerRes = await runWorkerParser<Partial<Driver>>('parseDrivers', file);
+    if (workerRes.data && workerRes.data.length > 0) {
+      return { drivers: workerRes.data, errors: workerRes.errors };
+    }
+  } catch (err) {
+    console.warn('Worker parse drivers error, using sync:', err);
+  }
+
   return new Promise((resolve, reject) => {
     const reader = new FileReader();
     reader.onload = (e) => {

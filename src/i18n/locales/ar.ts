@@ -187,7 +187,7 @@ export const ar: TranslationKey = {
     code: 'الرمز',
     nameSocial: 'الاسم / التسمية التجارية',
     typeConvention: 'النوع / الاتفاقية',
-    initialDebt: 'الدين الأولي',
+    initialDebt: 'الرصيد الأولي',
     creditLimit: 'سقف الائتمان',
     balanceDebt: 'الرصيد / الدين',
     unlimited: 'غير محدد',

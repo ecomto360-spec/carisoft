@@ -3,6 +3,8 @@ export interface CompanySettings {
   name: string;
   activity: string;
   address: string;
+  city?: string;
+  wilaya?: string;
   rc: string;
   nif: string;
   nis: string;
@@ -28,6 +30,14 @@ export interface CustomerFamily {
   companyId?: string;
 }
 
+export interface CustomerActivity {
+  id: string;
+  name: string;
+  code?: string;
+  description?: string;
+  companyId?: string;
+}
+
 export interface Convention {
   id: string;
   name: string;
@@ -41,6 +51,11 @@ export interface Customer {
   code: string;
   name: string;
   type: string;
+  activityId?: string;
+  activityName?: string;
+  wilaya?: string;
+  wilayaCode?: string;
+  city?: string;
   address?: string;
   phone?: string;
   mobile?: string;
@@ -54,10 +69,16 @@ export interface Customer {
   tvaExempt: boolean;
   hidePricesOnDeliveryNote?: boolean;
   initialDebt?: number;
+  initialBalance?: number;
   creditLimit?: number;
   balance: number;
+  favoriteTruckIds?: string[];
+  lastTruckId?: string;
+  customPrices?: Record<string, number>;
   active: boolean;
   companyId?: string;
+  createdAt?: string;
+  updatedAt?: string;
 }
 
 export interface ProductFamily {
@@ -84,7 +105,10 @@ export interface Product {
   stock: number;
   minStock: number;
   active: boolean;
+  defaultPrice?: number;
   companyId?: string;
+  createdAt?: string;
+  updatedAt?: string;
 }
 
 export interface ProductPrice {
@@ -104,12 +128,16 @@ export interface Truck {
   driverName?: string;
   driverPhone?: string;
   driverId?: string;
+  driverLicense?: string;
+  driverNotes?: string;
   allowDiscount?: boolean;
   isFavorite?: boolean;
   imageUrl?: string;
   brand?: string;
   active: boolean;
   companyId?: string;
+  createdAt?: string;
+  updatedAt?: string;
 }
 
 export interface Driver {
@@ -118,6 +146,8 @@ export interface Driver {
   phone: string;
   active: boolean;
   companyId?: string;
+  createdAt?: string;
+  updatedAt?: string;
 }
 
 export interface Order {
@@ -131,6 +161,8 @@ export interface Order {
   totalTTC: number;
   status: 'draft' | 'confirmed' | 'delivered' | 'cancelled';
   companyId?: string;
+  createdAt?: string;
+  updatedAt?: string;
 }
 
 export interface OrderItem {
@@ -166,6 +198,8 @@ export interface DeliveryNote {
   invoiceId?: string;
   orderId?: string;
   companyId?: string;
+  createdAt?: string;
+  updatedAt?: string;
 }
 
 export interface DeliveryNoteItem {
@@ -183,22 +217,37 @@ export interface Invoice {
   number: string;
   date: string;
   customerId: string;
+  orderId?: string; // Optionnel : Lié à un bon de commande
+  orderNumber?: string;
   totalHT: number;
   totalTVA: number;
   timbre: number;
   totalTTC: number;
   status: 'draft' | 'validated' | 'paid' | 'cancelled';
+  type?: 'standard' | 'avoir'; // Facture normale ou Facture d'avoir
   paymentMode: string;
   companyId?: string;
+  cancelReason?: string; // Motif d'annulation obligatoire
+  cancelledAt?: string;
+  cancelledBy?: string;
+  notes?: string;
+  customerRef?: string;
+  createdAt?: string;
+  updatedAt?: string;
 }
 
 export interface InvoiceItem {
   id: string;
   invoiceId: string;
   productId: string;
+  customDesignation?: string;
+  unit?: string;
   quantity: number;
   priceHT: number;
+  discountPercent?: number;
+  tvaRate?: number;
   totalHT: number;
+  totalTTC?: number;
   companyId?: string;
 }
 
@@ -226,4 +275,38 @@ export interface Payment {
   notes?: string;
   companyId?: string;
 }
+
+export interface LicenseRecord {
+  key: string;
+  tenantId: string;
+  durationDays: number;
+  maxMachines: number;
+  status: 'unused' | 'active' | 'expired' | 'revoked';
+  machineId: string | null;
+  activatedAt: string | null;
+  expiresAt: string | null;
+  createdAt: string;
+  createdBy: string;
+  updatedAt?: string;
+}
+
+export interface LicenseTokenPayload {
+  key: string;
+  tenantId: string;
+  machineId: string;
+  activatedAt: string;
+  expiresAt: string;
+}
+
+export interface LicenseStateRecord {
+  tenantId: string;
+  key: string;
+  token: string;
+  payload: LicenseTokenPayload;
+  signature: string;
+  lastSeenAt: number;
+  status: 'active' | 'expired' | 'revoked' | 'invalid' | 'tampered';
+  updatedAt?: string;
+}
+
 export * from './saas';

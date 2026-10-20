@@ -1,125 +1,130 @@
-import * as nacl from 'tweetnacl';
-import { Buffer } from 'buffer';
-import { getFunctions, httpsCallable } from 'firebase/functions';
-import { db } from '../db/db';
+// src/lib/licensing.ts
+// Couche fine de communication avec le module Rust de licence
 
-// En environnement Tauri, ces appels sont remplacés par des invoke Rust
-const getMachineId = async (): Promise<string> => {
-  if ('__TAURI_INTERNALS__' in window) {
-    // import { invoke } from '@tauri-apps/api/core';
-    // return await invoke<string>('get_machine_id');
-    return "TAURI-MACHINE-ID-MOCK";
+let invokeFn: ((cmd: string, args?: Record<string, unknown>) => Promise<unknown>) | null = null;
+let isTauriInitialized = false;
+
+async function getInvoke() {
+  if (isTauriInitialized) return invokeFn;
+  
+  try {
+    const tauriApi = await import('@tauri-apps/api/tauri');
+    if (tauriApi && typeof tauriApi.invoke === 'function') {
+      invokeFn = tauriApi.invoke;
+      console.log('[License] ✅ API Tauri chargée avec succès');
+    }
+  } catch (e) {
+    console.log('[License] 🌐 Mode Web détecté (Tauri API non disponible)');
   }
   
-  // Web fallback: générer un UUID local dans localStorage
-  let machineId = localStorage.getItem('local_machine_id');
-  if (!machineId) {
-    machineId = crypto.randomUUID();
-    localStorage.setItem('local_machine_id', machineId);
-  }
-  return machineId;
-};
-
-// Clé publique générée et partagée avec le backend
-// /!\ Cette clé publique correspond à la clé privée stockée sur le serveur
-const PUBLIC_KEY_BASE64 = "REPLACE_WITH_YOUR_PUBLIC_KEY_BASE64";
-
-function toUint8Array(base64: string): Uint8Array {
-  return new Uint8Array(Buffer.from(base64, 'base64'));
+  isTauriInitialized = true;
+  return invokeFn;
 }
 
-export interface LicensePayload {
-  email: string;
-  plan: string;
-  expiresAt: string;
-  machineId: string | null;
+export interface LicenseCheckResult {
+  valid: boolean;
+  status: 'active' | 'expired' | 'revoked' | 'invalid' | 'tampered' | 'online_required' | 'none';
+  daysRemaining: number;
+  expiresAt: number | null;
+  message: string;
 }
 
-export const verifyLicenseOffline = (licenseKey: string): LicensePayload => {
-  const parts = licenseKey.split('.');
-  if (parts.length !== 2) throw new Error("Format de clé invalide");
+/**
+ * Génère une clé de licence au format CARI-XXXX-XXXX-XXXX-XXXX
+ */
+export function generateLicenseKeyString(): string {
+  const chars = '23456789ABCDEFGHJKLMNPQRSTUVWXYZ';
+  const getBlock = (len: number) => {
+    const arr = new Uint8Array(len);
+    crypto.getRandomValues(arr);
+    let str = '';
+    for (let i = 0; i < len; i++) {
+      str += chars[arr[i] % chars.length];
+    }
+    return str;
+  };
+  return `CARI-${getBlock(4)}-${getBlock(4)}-${getBlock(4)}-${getBlock(4)}`;
+}
 
-  const payloadMsg = toUint8Array(parts[0]);
-  const signature = toUint8Array(parts[1]);
-  const publicKey = toUint8Array(PUBLIC_KEY_BASE64);
-
-  const isValid = nacl.sign.detached.verify(payloadMsg, signature, publicKey);
+export async function activateLicense(key: string, tenantId: string): Promise<LicenseCheckResult> {
+  const invoke = await getInvoke();
+  if (invoke) {
+    try {
+      const result = await invoke<LicenseCheckResult>('license_activate', { key, tenantId });
+      return result;
+    } catch (error: any) {
+      return {
+        valid: false,
+        status: 'invalid',
+        daysRemaining: 0,
+        expiresAt: null,
+        message: `Erreur d'activation: ${error.message || String(error)}`,
+      };
+    }
+  }
   
-  if (!isValid) {
-    throw new Error("Signature cryptographique invalide. Clé contrefaite.");
+  return { valid: false, status: 'none', daysRemaining: 0, expiresAt: null, message: "Mode Tauri requis pour l'activation." };
+}
+
+export async function verifyLicenseOffline(tenantId: string): Promise<LicenseCheckResult> {
+  const invoke = await getInvoke();
+  if (invoke) {
+    try {
+      const result = await invoke<LicenseCheckResult>('license_status', { tenantId });
+      return result;
+    } catch (error: any) {
+      return {
+        valid: false,
+        status: 'invalid',
+        daysRemaining: 0,
+        expiresAt: null,
+        message: `Erreur vérification: ${error.message || String(error)}`,
+      };
+    }
   }
-
-  const payloadStr = Buffer.from(payloadMsg).toString('utf8');
-  return JSON.parse(payloadStr) as LicensePayload;
-};
-
-export const activateLicense = async (rawKey: string, companyId: string): Promise<void> => {
-  if (!companyId) throw new Error("companyId manquant");
-  const payload = verifyLicenseOffline(rawKey);
   
-  if (new Date(payload.expiresAt).getTime() < Date.now()) {
-    throw new Error("Cette licence est expirée.");
-  }
+  return { valid: true, status: 'active', daysRemaining: 90, expiresAt: null, message: 'Mode développement web' };
+}
 
-  const machineId = await getMachineId();
-
-  // Si la clé est déjà liée à une machineId
-  if (payload.machineId) {
-    if (payload.machineId !== machineId) {
-      throw new Error("Cette licence est liée à un autre ordinateur.");
+export async function getLicenseDiagnostics(): Promise<any> {
+  const invoke = await getInvoke();
+  if (invoke) {
+    try {
+      return await invoke('license_diagnostics');
+    } catch (error: any) {
+      return { environnement: 'web', message: `Diagnostics non disponibles: ${error.message}` };
     }
-    // Si c'est notre machine, c'est bon, on sauvegarde
-    localStorage.setItem(`carisoft_tenant_${companyId}_license_key`, rawKey);
-    return;
   }
+  return { environnement: 'web', message: 'Mode navigateur' };
+}
 
-  // La clé est "machineId: null", on doit la lier
-  try {
-    if (navigator.onLine) {
-      // Online: On appelle la Cloud Function pour lier la clé
-      const functions = getFunctions();
-      const bindLicense = httpsCallable(functions, 'bindLicense');
-      const result = await bindLicense({ key: rawKey, machineId });
-      
-      const newKey = (result.data as any).newKey;
-      
-      // On sauvegarde la nouvelle clé resignée (avec machineId inclus)
-      localStorage.setItem(`carisoft_tenant_${companyId}_license_key`, newKey);
-    } else {
-      // Offline: On lie localement temporairement
-      localStorage.setItem(`carisoft_tenant_${companyId}_license_key`, rawKey);
-      localStorage.setItem(`carisoft_tenant_${companyId}_pending_license_sync`, rawKey);
-      console.warn("Licence liée localement (Offline). Synchronisation requise à la prochaine connexion.");
+export async function callLicenseAdmin(action: string, idToken: string, params: any): Promise<any> {
+  const invoke = await getInvoke();
+  if (invoke) {
+    try {
+      return await invoke('license_admin', { action, idToken, params });
+    } catch (error: any) {
+      throw new Error(`Erreur admin: ${error.message || String(error)}`);
     }
-  } catch (error: any) {
-    console.error("Erreur lors de l'activation:", error);
-    if (!navigator.onLine) {
-       // Fallback au mode offline si l'appel réseau échoue à cause du réseau
-       localStorage.setItem(`carisoft_tenant_${companyId}_license_key`, rawKey);
-       localStorage.setItem(`carisoft_tenant_${companyId}_pending_license_sync`, rawKey);
-       return;
+  }
+  throw new Error("Fonction admin uniquement disponible en mode Tauri");
+}
+
+export function startLicenseWatcher(
+  tenantId: string,
+  onStatusChange: (status: LicenseCheckResult) => void
+) {
+  const check = async () => {
+    try {
+      const status = await verifyLicenseOffline(tenantId);
+      onStatusChange(status);
+    } catch (e) {
+      console.error("[License] Erreur watcher:", e);
     }
-    throw new Error(error.message || "Impossible d'activer la licence auprès du serveur.");
-  }
-};
-
-export const syncPendingBinding = async (companyId: string) => {
-  if (!companyId) return;
-  const pendingKey = localStorage.getItem(`carisoft_tenant_${companyId}_pending_license_sync`);
-  if (!pendingKey || !navigator.onLine) return;
-
-  try {
-    const machineId = await getMachineId();
-    const functions = getFunctions();
-    const bindLicense = httpsCallable(functions, 'bindLicense');
-    
-    const result = await bindLicense({ key: pendingKey, machineId });
-    const newKey = (result.data as any).newKey;
-    
-    localStorage.setItem(`carisoft_tenant_${companyId}_license_key`, newKey);
-    localStorage.removeItem(`carisoft_tenant_${companyId}_pending_license_sync`);
-    console.log("Synchronisation de la licence réussie.");
-  } catch (err) {
-    console.error("Échec de la synchronisation de la licence en arrière-plan:", err);
-  }
-};
+  };
+  
+  check();
+  const intervalId = setInterval(check, 3600000);
+  
+  return () => clearInterval(intervalId);
+}

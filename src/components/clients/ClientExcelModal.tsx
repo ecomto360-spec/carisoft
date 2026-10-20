@@ -6,6 +6,7 @@ import {
   downloadClientsTemplate, 
   parseClientsFromExcel 
 } from '../../lib/excelUtils';
+import { pushBatchToFirestore } from '../../lib/syncFirestore';
 import { Button } from '../ui/Button';
 import { 
   FileSpreadsheet, 
@@ -31,6 +32,7 @@ export function ClientExcelModal({ isOpen, onClose, clients, companyId = '' }: C
   const [activeTab, setActiveTab] = useState<'export' | 'import'>('export');
   const [file, setFile] = useState<File | null>(null);
   const [isProcessing, setIsProcessing] = useState(false);
+  const [importProgress, setImportProgress] = useState<{ current: number; total: number; percent: number } | null>(null);
   const [parsedData, setParsedData] = useState<Partial<Customer>[]>([]);
   const [parseErrors, setParseErrors] = useState<string[]>([]);
   const [importResult, setImportResult] = useState<{
@@ -52,6 +54,7 @@ export function ClientExcelModal({ isOpen, onClose, clients, companyId = '' }: C
     setIsProcessing(true);
     setParseErrors([]);
     setImportResult(null);
+    setImportProgress(null);
 
     try {
       const { clients: parsedClients, errors } = await parseClientsFromExcel(selectedFile);
@@ -68,32 +71,46 @@ export function ClientExcelModal({ isOpen, onClose, clients, companyId = '' }: C
   const handleExecuteImport = async () => {
     if (parsedData.length === 0) return;
     setIsProcessing(true);
+    setImportProgress({ current: 0, total: parsedData.length, percent: 0 });
 
     try {
       const existingCustomers = await db.customers.where('companyId').equals(currentCompanyId).toArray();
+      
+      // O(N) duplicate detection via Map
+      const existingByCode = new Map<string, Customer>();
+      const existingByName = new Map<string, Customer>();
+      existingCustomers.forEach(c => {
+        if (c.code) existingByCode.set(c.code.toLowerCase().trim(), c);
+        if (c.name) existingByName.set(c.name.toLowerCase().trim(), c);
+      });
+
+      const toUpsert: Customer[] = [];
       let inserted = 0;
       let updated = 0;
+      const now = new Date().toISOString();
 
       for (const item of parsedData) {
-        if (!item.name) continue;
+        if (!item.name || String(item.name).trim() === '') continue;
 
-        // Try to match existing customer by code or name
-        const match = existingCustomers.find(
-          (c) => (item.code && c.code.toLowerCase() === item.code.toLowerCase()) || 
-                 (c.name.toLowerCase() === item.name?.toLowerCase())
-        );
+        const cleanCode = item.code?.toLowerCase().trim();
+        const cleanName = item.name?.toLowerCase().trim();
+        const match = (cleanCode && existingByCode.get(cleanCode)) || (cleanName && existingByName.get(cleanName));
 
         if (match) {
           if (importMode === 'merge') {
-            await db.customers.update(match.id, {
+            const mergedClient: Customer = {
+              ...match,
               ...item,
-              companyId: companyId || match.companyId,
-            });
+              id: match.id,
+              companyId: currentCompanyId || match.companyId,
+              updatedAt: now,
+            };
+            toUpsert.push(mergedClient);
             updated++;
           }
           // if skip, do nothing
         } else {
-          const newId = `C_${Date.now()}_${Math.random().toString(36).substr(2, 5)}`;
+          const newId = `C_${Date.now()}_${Math.random().toString(36).substr(2, 6)}`;
           const newClient: Customer = {
             id: newId,
             code: item.code || `CL-${Math.floor(1000 + Math.random() * 9000)}`,
@@ -115,11 +132,29 @@ export function ClientExcelModal({ isOpen, onClose, clients, companyId = '' }: C
             creditLimit: item.creditLimit || 0,
             balance: item.balance ?? (-(item.initialDebt || 0)),
             active: item.active !== false,
-            companyId: companyId,
+            companyId: currentCompanyId,
+            createdAt: now,
+            updatedAt: now,
           };
-          await db.customers.add(newClient);
+          toUpsert.push(newClient);
+          existingByCode.set(newClient.code.toLowerCase().trim(), newClient);
+          existingByName.set(newClient.name.toLowerCase().trim(), newClient);
           inserted++;
         }
+      }
+
+      // Bulk write in chunks of 500
+      const CHUNK_SIZE = 500;
+      for (let i = 0; i < toUpsert.length; i += CHUNK_SIZE) {
+        const chunk = toUpsert.slice(i, i + CHUNK_SIZE);
+        await db.customers.bulkPut(chunk);
+        const currentDone = Math.min(i + chunk.length, toUpsert.length);
+        const pct = Math.round((currentDone / toUpsert.length) * 100);
+        setImportProgress({
+          current: currentDone,
+          total: toUpsert.length,
+          percent: pct,
+        });
       }
 
       setImportResult({
@@ -127,12 +162,21 @@ export function ClientExcelModal({ isOpen, onClose, clients, companyId = '' }: C
         updated,
         total: parsedData.length,
       });
+
+      // Background Firestore batch sync (non-blocking)
+      if (currentCompanyId) {
+        pushBatchToFirestore('customers', toUpsert, currentCompanyId).catch((err) => {
+          console.warn('Background Firestore sync after client import encountered an issue:', err);
+        });
+      }
+
       setParsedData([]);
       setFile(null);
     } catch (err: any) {
       setParseErrors([err?.message || 'Erreur lors de l\'enregistrement en base de données.']);
     } finally {
       setIsProcessing(false);
+      setImportProgress(null);
     }
   };
 
@@ -141,6 +185,7 @@ export function ClientExcelModal({ isOpen, onClose, clients, companyId = '' }: C
     setParsedData([]);
     setParseErrors([]);
     setImportResult(null);
+    setImportProgress(null);
     if (fileInputRef.current) {
       fileInputRef.current.value = '';
     }
@@ -342,8 +387,27 @@ export function ClientExcelModal({ isOpen, onClose, clients, companyId = '' }: C
                     </div>
                   </div>
 
+                  {/* Import Progress Bar */}
+                  {importProgress && (
+                    <div className="bg-blue-50 border border-blue-200 rounded-xl p-4 space-y-2">
+                      <div className="flex justify-between items-center text-xs font-bold text-blue-900">
+                        <span className="flex items-center gap-2">
+                          <RefreshCw className="h-4 w-4 animate-spin text-blue-600" />
+                          Écriture par lots en cours (chunks de 500)...
+                        </span>
+                        <span>{importProgress.current} / {importProgress.total} ({importProgress.percent}%)</span>
+                      </div>
+                      <div className="w-full bg-blue-200 rounded-full h-3 overflow-hidden">
+                        <div 
+                          className="bg-blue-600 h-3 rounded-full transition-all duration-200 ease-out"
+                          style={{ width: `${importProgress.percent}%` }}
+                        />
+                      </div>
+                    </div>
+                  )}
+
                   {/* Duplicate Resolution Options */}
-                  {parsedData.length > 0 && (
+                  {parsedData.length > 0 && !importProgress && (
                     <div className="bg-slate-50 p-4 rounded-xl border border-slate-200 space-y-3">
                       <div className="text-xs font-bold text-slate-700 uppercase tracking-wider">Comportement en cas de doublon (même code ou nom) :</div>
                       <div className="flex flex-wrap gap-4">
@@ -373,16 +437,22 @@ export function ClientExcelModal({ isOpen, onClose, clients, companyId = '' }: C
                     </div>
                   )}
 
-                  {/* Data Preview Table */}
-                  {parsedData.length > 0 && (
+                  {/* Data Preview Table (Max 100 lines preview) */}
+                  {parsedData.length > 0 && !importProgress && (
                     <div className="space-y-2">
                       <div className="flex justify-between items-center text-xs font-bold text-slate-600">
-                        <span>Aperçu des 5 premières lignes sur {parsedData.length} :</span>
+                        <span>Aperçu {parsedData.length > 100 ? 'des 100 premières lignes' : `de la totalité`} sur {parsedData.length} client(s) :</span>
+                        {parsedData.length > 100 && (
+                          <span className="text-blue-600 bg-blue-50 px-2 py-0.5 rounded text-[11px]">
+                            Mode optimisé : DOM allégé
+                          </span>
+                        )}
                       </div>
-                      <div className="border border-slate-200 rounded-xl overflow-hidden overflow-x-auto max-h-48">
+                      <div className="border border-slate-200 rounded-xl overflow-hidden overflow-x-auto max-h-60">
                         <table className="w-full text-left text-xs">
-                          <thead className="bg-slate-100 text-slate-700 font-bold border-b border-slate-200">
+                          <thead className="bg-slate-100 text-slate-700 font-bold border-b border-slate-200 sticky top-0">
                             <tr>
+                              <th className="p-2.5">#</th>
                               <th className="p-2.5">Code</th>
                               <th className="p-2.5">Nom</th>
                               <th className="p-2.5">Type</th>
@@ -392,8 +462,9 @@ export function ClientExcelModal({ isOpen, onClose, clients, companyId = '' }: C
                             </tr>
                           </thead>
                           <tbody className="divide-y divide-slate-100">
-                            {parsedData.slice(0, 5).map((row, idx) => (
+                            {parsedData.slice(0, 100).map((row, idx) => (
                               <tr key={idx} className="hover:bg-slate-50">
+                                <td className="p-2.5 text-slate-400 font-mono">{idx + 1}</td>
                                 <td className="p-2.5 font-mono font-bold text-slate-800">{row.code || '-'}</td>
                                 <td className="p-2.5 font-semibold text-slate-900">{row.name}</td>
                                 <td className="p-2.5 text-slate-600">{row.type}</td>

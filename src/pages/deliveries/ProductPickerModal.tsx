@@ -10,6 +10,7 @@ interface ProductPickerModalProps {
   products: Product[];
   productPrices: ProductPrice[];
   conventionId?: string;
+  customPrices?: Record<string, number>;
 }
 
 export function ProductPickerModal({
@@ -18,17 +19,22 @@ export function ProductPickerModal({
   onSelect,
   products,
   productPrices,
-  conventionId
+  conventionId,
+  customPrices
 }: ProductPickerModalProps) {
   const [search, setSearch] = useState('');
   const [highlightedId, setHighlightedId] = useState<string>(products[0]?.id || '');
 
   const getProductPrice = (productId: string) => {
+    if (customPrices && customPrices[productId] !== undefined && customPrices[productId] > 0) {
+      return customPrices[productId];
+    }
     if (conventionId) {
       const p = productPrices.find(pr => pr.productId === productId && pr.conventionId === conventionId);
       if (p) return p.priceHT;
     }
-    const defaultP = productPrices.find(pr => pr.productId === productId);
+    const defaultP = productPrices.find(pr => pr.productId === productId && pr.conventionId === 'C_CONV1')
+      || productPrices.find(pr => pr.productId === productId);
     return defaultP ? defaultP.priceHT : 650;
   };
 

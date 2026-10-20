@@ -44,6 +44,11 @@ service cloud.firestore {
       allow read, update, delete: if true;
     }
 
+    // Licenses (SuperAdmin OU compte serveur activator)
+    match /licenses/{licenseKey} {
+      allow read, write: if isSuperAdmin() || request.auth.uid == 'bTXFA21WwSa3h7YtvHFXEciZFUv1';
+    }
+
     // Customers (SaaS logic - read by SuperAdmin)
     match /customers/{customerId} {
       allow read, write: if true;

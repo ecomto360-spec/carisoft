@@ -1,6 +1,7 @@
 import { useState, useMemo } from 'react';
 import { Truck, Driver, DeliveryNote } from '../../types';
 import { Star, X, Check, Search, Truck as TruckIcon, Phone } from 'lucide-react';
+import { useDebounce } from '../../hooks/useDebounce';
 
 interface FavoriteTrucksModalProps {
   isOpen: boolean;
@@ -8,6 +9,8 @@ interface FavoriteTrucksModalProps {
   onSelect: (truck: Truck, driverName?: string) => void;
   customerName: string;
   customerId?: string;
+  customerFavoriteTruckIds?: string[];
+  onToggleCustomerFavorite?: (truckId: string) => void;
   trucks: Truck[];
   drivers: Driver[];
   deliveries: DeliveryNote[];
@@ -19,6 +22,7 @@ interface FavoriteTruckItem {
   driverName: string;
   driverPhone?: string;
   removalCount: number;
+  isCustomerFavorite: boolean;
 }
 
 export function FavoriteTrucksModal({
@@ -27,12 +31,15 @@ export function FavoriteTrucksModal({
   onSelect,
   customerName,
   customerId,
+  customerFavoriteTruckIds = [],
+  onToggleCustomerFavorite,
   trucks,
   drivers,
   deliveries,
   selectedTruckId
 }: FavoriteTrucksModalProps) {
   const [search, setSearch] = useState('');
+  const debouncedSearch = useDebounce(search, 200);
 
   const driverMap = useMemo(() => {
     const map = new Map<string, { name: string; phone?: string }>();
@@ -43,6 +50,7 @@ export function FavoriteTrucksModal({
   // Compute removal count (Nbre d'enlèvement) and prioritize favorite trucks
   const favoriteItems = useMemo<FavoriteTruckItem[]>(() => {
     const countByTruck = new Map<string, number>();
+    const custFavSet = new Set(customerFavoriteTruckIds);
     
     if (customerId && deliveries) {
       deliveries.forEach(del => {
@@ -52,9 +60,15 @@ export function FavoriteTrucksModal({
       });
     }
 
-    // Include trucks marked as favorite OR trucks that have delivered for this customer
-    const candidateTrucks = trucks.filter(t => t.active !== false && (t.isFavorite || (countByTruck.get(t.id) || 0) > 0));
-    // If none are marked favorite and no deliveries yet, show all active trucks
+    // Include trucks marked as favorite OR trucks that have delivered for this customer OR are in customer favorites
+    const candidateTrucks = trucks.filter(t => 
+      t.active !== false && (
+        t.isFavorite || 
+        custFavSet.has(t.id) || 
+        (countByTruck.get(t.id) || 0) > 0
+      )
+    );
+    // If none found, show all active trucks
     const targetTrucks = candidateTrucks.length > 0 ? candidateTrucks : trucks.filter(t => t.active !== false);
 
     return targetTrucks.map(truck => {
@@ -62,41 +76,54 @@ export function FavoriteTrucksModal({
       const driverInfo = truck.driverId ? driverMap.get(truck.driverId) : undefined;
       const driverName = truck.driverName || driverInfo?.name || '-';
       const driverPhone = truck.driverPhone || driverInfo?.phone;
+      const isCustomerFavorite = custFavSet.has(truck.id) || realCount > 0;
 
       return {
         truck,
         driverName,
         driverPhone,
-        removalCount: realCount
+        removalCount: realCount,
+        isCustomerFavorite
       };
     }).sort((a, b) => {
-      // 1. Trucks explicitly marked with isFavorite checkbox at the very top
-      if (a.truck.isFavorite && !b.truck.isFavorite) return -1;
-      if (!a.truck.isFavorite && b.truck.isFavorite) return 1;
+      // 1. Trucks explicitly assigned as favorite for this specific customer
+      const aCust = custFavSet.has(a.truck.id) ? 1 : 0;
+      const bCust = custFavSet.has(b.truck.id) ? 1 : 0;
+      if (aCust !== bCust) return bCust - aCust;
+
       // 2. Then sort by removal count descending
       if (b.removalCount !== a.removalCount) {
         return b.removalCount - a.removalCount;
       }
-      // 3. Fallback alphabetical by matricule
+      // 3. Global isFavorite
+      if (a.truck.isFavorite && !b.truck.isFavorite) return -1;
+      if (!a.truck.isFavorite && b.truck.isFavorite) return 1;
+
+      // 4. Fallback alphabetical by matricule
       return a.truck.matricule.localeCompare(b.truck.matricule);
     });
-  }, [trucks, customerId, deliveries, driverMap]);
+  }, [trucks, customerId, customerFavoriteTruckIds, deliveries, driverMap]);
 
   const [highlightedId, setHighlightedId] = useState<string>(
     selectedTruckId || (favoriteItems[0]?.truck.id || '')
   );
 
   const filteredItems = useMemo(() => {
+    const q = debouncedSearch.toLowerCase().trim();
+    if (!q) return favoriteItems.slice(0, 50);
+
     return favoriteItems.filter(item => {
-      const q = search.toLowerCase().trim();
-      if (!q) return true;
       return (
         item.truck.matricule.toLowerCase().includes(q) ||
         item.driverName.toLowerCase().includes(q) ||
         (item.driverPhone && item.driverPhone.includes(q))
       );
     });
-  }, [favoriteItems, search]);
+  }, [favoriteItems, debouncedSearch]);
+
+  const displayedItems = useMemo(() => {
+    return filteredItems.slice(0, 30);
+  }, [filteredItems]);
 
   if (!isOpen) return null;
 
@@ -113,11 +140,11 @@ export function FavoriteTrucksModal({
       <div className="bg-white w-full max-w-3xl rounded-xl shadow-2xl border border-slate-300 overflow-hidden flex flex-col max-h-[90vh]">
         
         {/* Window Title Bar */}
-        <div className="bg-linear-to-r from-blue-700 via-blue-800 to-indigo-900 text-white px-4 py-2.5 flex items-center justify-between shadow-sm select-none">
+        <div className="bg-gradient-to-r from-blue-700 via-blue-800 to-indigo-900 text-white px-4 py-2.5 flex items-center justify-between shadow-sm select-none">
           <div className="flex items-center gap-2">
             <Star className="h-4 w-4 text-amber-300 fill-amber-300" />
             <span className="font-semibold text-xs sm:text-sm tracking-tight truncate">
-              Camions habituels / favoris de M {customerName || 'DEVERS'}
+              Camions habituels / favoris de : <strong className="text-amber-200">{customerName || 'Client sélectionné'}</strong>
             </span>
           </div>
           <button
@@ -153,8 +180,11 @@ export function FavoriteTrucksModal({
         </div>
 
         {/* Blue Table Header Title */}
-        <div className="bg-blue-600 text-white text-center py-1 text-xs font-bold uppercase tracking-wider">
-          Camions habituels de M {customerName || 'DEVERS'}
+        <div className="bg-blue-600 text-white text-center py-1 text-xs font-bold uppercase tracking-wider flex items-center justify-center gap-2">
+          <span>Camions habituels & assignés à ce client</span>
+          <span className="text-[10px] bg-blue-800 text-blue-100 px-2 py-0.2 rounded-full font-mono">
+            {filteredItems.length} camion{filteredItems.length > 1 ? 's' : ''}
+          </span>
         </div>
 
         {/* Data Table */}
@@ -162,24 +192,26 @@ export function FavoriteTrucksModal({
           <table className="w-full text-left text-xs border-collapse">
             <thead className="bg-slate-800 text-white sticky top-0 z-10 select-none">
               <tr>
-                <th className="py-2 px-2.5 font-semibold border-r border-slate-700 w-12 text-center">Photo</th>
-                <th className="py-2 px-3 font-semibold border-r border-slate-700 w-32">Matricule</th>
+                <th className="py-2 px-2.5 font-semibold border-r border-slate-700 w-12 text-center">Favori</th>
+                <th className="py-2 px-3 font-semibold border-r border-slate-700 w-36">Matricule</th>
                 <th className="py-2 px-3 font-semibold border-r border-slate-700">Chauffeur & Téléphone</th>
                 <th className="py-2 px-3 font-semibold text-right border-r border-slate-700 w-24">Tare (T)</th>
                 <th className="py-2 px-3 font-semibold text-right border-r border-slate-700 w-24">Volume (m³)</th>
-                <th className="py-2 px-3 font-semibold text-center w-24 bg-blue-900/60">Enlèvements</th>
+                <th className="py-2 px-3 font-semibold text-center w-28 bg-blue-900/60">Enlèvements</th>
               </tr>
             </thead>
             <tbody className="divide-y divide-slate-200 bg-white">
-              {filteredItems.length === 0 ? (
+              {displayedItems.length === 0 ? (
                 <tr>
                   <td colSpan={6} className="py-8 text-center text-slate-400 italic">
-                    Aucun camion favori trouvé
+                    Aucun camion habituel trouvé
                   </td>
                 </tr>
               ) : (
-                filteredItems.map((item) => {
+                displayedItems.map((item) => {
                   const isSelected = item.truck.id === highlightedId;
+                  const isExplicitFav = customerFavoriteTruckIds.includes(item.truck.id) || item.truck.isFavorite;
+
                   return (
                     <tr
                       key={item.truck.id}
@@ -194,25 +226,30 @@ export function FavoriteTrucksModal({
                           : 'hover:bg-blue-50/70 text-slate-700'
                       }`}
                     >
-                      {/* Photo Thumbnail */}
-                      <td className="py-1 px-2 border-r border-slate-200 text-center">
-                        <div className="w-9 h-7 rounded bg-slate-900 overflow-hidden flex items-center justify-center mx-auto border border-slate-300">
-                          {item.truck.imageUrl ? (
-                            <img src={item.truck.imageUrl} alt="" className="w-full h-full object-cover" />
-                          ) : (
-                            <TruckIcon className="h-3.5 w-3.5 text-amber-400" />
-                          )}
-                        </div>
+                      {/* Favorite Star Toggle */}
+                      <td className="py-1 px-2 border-r border-slate-200 text-center" onClick={(e) => e.stopPropagation()}>
+                        <button
+                          type="button"
+                          onClick={() => onToggleCustomerFavorite && onToggleCustomerFavorite(item.truck.id)}
+                          className="p-1 hover:scale-110 transition-transform cursor-pointer rounded"
+                          title={isExplicitFav ? "Retirer des favoris de ce client" : "Ajouter aux favoris de ce client"}
+                        >
+                          <Star className={`h-4 w-4 ${
+                            isExplicitFav 
+                              ? 'text-amber-500 fill-amber-500' 
+                              : 'text-slate-300 hover:text-amber-400'
+                          }`} />
+                        </button>
                       </td>
 
                       {/* Matricule */}
                       <td className="py-2 px-3 border-r border-slate-200 font-mono font-bold tracking-wider text-slate-950">
                         <div className="flex items-center gap-1.5">
                           <span>{item.truck.matricule}</span>
-                          {item.truck.isFavorite && (
-                            <span className="inline-flex items-center gap-1 text-[10px] bg-amber-100 text-amber-900 border border-amber-300 font-sans font-black px-1.5 py-0.5 rounded shadow-2xs">
-                              <Star className="h-2.5 w-2.5 fill-amber-500 text-amber-500" />
-                              Favori
+                          {isExplicitFav && (
+                            <span className="inline-flex items-center gap-0.5 text-[9px] bg-amber-100 text-amber-900 border border-amber-300 font-sans font-black px-1.5 py-0.2 rounded shadow-2xs">
+                              <Star className="h-2 w-2 fill-amber-500 text-amber-500" />
+                              Habituel
                             </span>
                           )}
                         </div>
@@ -241,7 +278,7 @@ export function FavoriteTrucksModal({
 
                       {/* Removal count */}
                       <td className="py-2 px-3 text-center font-mono font-black text-blue-800 bg-blue-50/40">
-                        {item.removalCount}
+                        {item.removalCount} bon{item.removalCount > 1 ? 's' : ''}
                       </td>
                     </tr>
                   );
@@ -279,4 +316,3 @@ export function FavoriteTrucksModal({
     </div>
   );
 }
-
