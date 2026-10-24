@@ -8,3 +8,21 @@ coverage/
 !.env.example
 
 .aistudio/
+.vercel
+.env*
+
+# Secrets Firebase & variables Vercel
+firebase-key.json
+*firebase-adminsdk*.json
+service-account*.json
+.env
+.env.*
+.vercel
+
+# Secrets Firebase & variables Vercel
+firebase-key.json
+*firebase-adminsdk*.json
+service-account*.json
+.env
+.env.*
+.vercel
