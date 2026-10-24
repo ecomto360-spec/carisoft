@@ -1,9 +1,18 @@
 ﻿import type { VercelRequest, VercelResponse } from '@vercel/node';
-import * as admin from 'firebase-admin';
+import admin from 'firebase-admin';
 import { getFirestore } from 'firebase-admin/firestore';
 
-if (!admin.apps.length) {
-  const serviceAccount = JSON.parse(process.env.FIREBASE_SERVICE_ACCOUNT || '{}');
+if (!admin.apps || admin.apps.length === 0) {
+  let serviceAccount: any = {};
+  try {
+    const rawEnv = process.env.FIREBASE_SERVICE_ACCOUNT || '{}';
+    serviceAccount = JSON.parse(rawEnv);
+    if (serviceAccount.private_key) {
+      serviceAccount.private_key = serviceAccount.private_key.replace(/\\n/g, '\n');
+    }
+  } catch (e) {
+    console.error('Failed to parse FIREBASE_SERVICE_ACCOUNT:', e);
+  }
   admin.initializeApp({
     credential: admin.credential.cert(serviceAccount)
   });
