@@ -3,7 +3,7 @@ import { useNavigate } from 'react-router-dom';
 import { db } from '../../db/db';
 import { useAuthStore } from '../../store/authStore';
 import { ShieldCheck, Lock, Globe } from 'lucide-react';
-import { generate3DayTrialLicense } from '../../lib/security';
+
 import { firestore, auth } from '../../lib/firebase';
 import { collection, doc, setDoc, getDocs, query, where, serverTimestamp } from 'firebase/firestore';
 import { signInWithEmailAndPassword } from 'firebase/auth';

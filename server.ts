@@ -103,6 +103,39 @@ async function startServer() {
     }
   });
 
+  // API Route: Generate Keys
+  app.post("/api/generate-keys", async (req, res) => {
+    try {
+      const genHandler = (await import("./api/generate-keys.js")).default || (await import("./api/generate-keys.ts")).default;
+      await genHandler(req, res);
+    } catch (err: any) {
+      console.error("Error invoking generate-keys handler:", err);
+      res.status(500).json({ error: err.message || "Erreur génération clés" });
+    }
+  });
+
+  // API Route: Admin Licenses
+  app.post("/api/admin-licenses", async (req, res) => {
+    try {
+      const adminLicensesHandler = (await import("./api/admin-licenses.js")).default || (await import("./api/admin-licenses.ts")).default;
+      await adminLicensesHandler(req, res);
+    } catch (err: any) {
+      console.error("Error invoking admin-licenses handler:", err);
+      res.status(500).json({ error: err.message || "Erreur admin-licenses" });
+    }
+  });
+
+  // API Route: Revoke Key
+  app.post("/api/revoke-key", async (req, res) => {
+    try {
+      const revokeHandler = (await import("./api/revoke-key.js")).default || (await import("./api/revoke-key.ts")).default;
+      await revokeHandler(req, res);
+    } catch (err: any) {
+      console.error("Error invoking revoke-key handler:", err);
+      res.status(500).json({ error: err.message || "Erreur révocation clé" });
+    }
+  });
+
   // Vite middleware for development
   if (process.env.NODE_ENV !== "production") {
     const vite = await createViteServer({

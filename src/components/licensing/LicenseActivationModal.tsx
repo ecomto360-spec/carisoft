@@ -24,7 +24,9 @@ export function LicenseActivationModal({ onClose }: { onClose: () => void }) {
 
     try {
       const payload = await activateLicense(key.trim(), tenantId);
-      const remainingDays = Math.max(1, Math.ceil((new Date(payload.expiresAt).getTime() - Date.now()) / (1000 * 60 * 60 * 24)));
+      const remainingDays = typeof payload.days_remaining === 'number'
+        ? payload.days_remaining
+        : (payload.expiresAt ? Math.ceil((new Date(payload.expiresAt).getTime() - Date.now()) / (1000 * 60 * 60 * 24)) : 0);
 
       setSuccess(`Licence validée et liée à cet ordinateur avec succès (${remainingDays} jours restants).`);
 

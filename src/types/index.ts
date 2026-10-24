@@ -21,7 +21,7 @@ export interface CompanySettings {
   licenseKey?: string;
   licenseExpiry?: string;
   licensePlan?: string;
-  licenseStatus?: 'active' | 'expired';
+  licenseStatus?: 'active' | 'expired' | 'none' | 'revoked' | 'invalid' | 'tampered';
 }
 
 export interface CustomerFamily {
@@ -296,6 +296,7 @@ export interface LicenseTokenPayload {
   machineId: string;
   activatedAt: string;
   expiresAt: string;
+  serverTime?: string;
 }
 
 export interface LicenseStateRecord {

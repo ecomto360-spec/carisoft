@@ -1,44 +1,82 @@
-import { initializeApp, getApps, getApp } from 'firebase/app';
-import { getAuth, signInWithEmailAndPassword } from 'firebase/auth';
-import { getFirestore, doc, runTransaction } from 'firebase/firestore';
+import * as admin from 'firebase-admin';
 import nacl from 'tweetnacl';
+import { Buffer } from 'buffer';
 
-// Initialisation du SDK client Firebase côté serveur
-function getFirebaseClientApp() {
-  const existing = getApps();
-  if (existing.length > 0) {
-    return getApp();
+const adminApp: any = admin;
+
+function initAdmin() {
+  if (!adminApp.apps?.length && !adminApp.getApps?.()?.length) {
+    const serviceAccountEnv = process.env.FIREBASE_SERVICE_ACCOUNT;
+    if (serviceAccountEnv) {
+      try {
+        const serviceAccount = JSON.parse(serviceAccountEnv);
+        adminApp.initializeApp({
+          credential: adminApp.credential.cert(serviceAccount)
+        });
+      } catch (e) {
+        console.error("Failed to parse FIREBASE_SERVICE_ACCOUNT JSON:", e);
+      }
+    } else if (process.env.FIREBASE_PROJECT_ID && process.env.FIREBASE_CLIENT_EMAIL && process.env.FIREBASE_PRIVATE_KEY) {
+      adminApp.initializeApp({
+        credential: adminApp.credential.cert({
+          projectId: process.env.FIREBASE_PROJECT_ID,
+          clientEmail: process.env.FIREBASE_CLIENT_EMAIL,
+          privateKey: process.env.FIREBASE_PRIVATE_KEY.replace(/\\n/g, '\n')
+        })
+      });
+    } else {
+      adminApp.initializeApp();
+    }
   }
-  const apiKey = process.env.FIREBASE_API_KEY;
-  const projectId = process.env.FIREBASE_PROJECT_ID;
+}
 
-  if (!apiKey || !projectId) {
-    throw new Error("Variables d'environnement FIREBASE_API_KEY et FIREBASE_PROJECT_ID obligatoires.");
+function signPayload(payloadObj: object, privateKeyBase64: string): string {
+  const payloadJson = JSON.stringify(payloadObj);
+  const payloadBytes = Buffer.from(payloadJson, 'utf8');
+  const privKeyBytes = Buffer.from(privateKeyBase64, 'base64');
+  let secretKey = privKeyBytes;
+  if (privKeyBytes.length === 32) {
+    const keyPair = nacl.sign.keyPair.fromSeed(privKeyBytes);
+    secretKey = Buffer.from(keyPair.secretKey);
   }
+  const signature = nacl.sign.detached(payloadBytes, secretKey);
+  const payloadBase64 = payloadBytes.toString('base64');
+  const signatureBase64 = Buffer.from(signature).toString('base64');
+  return `${payloadBase64}.${signatureBase64}`;
+}
 
-  return initializeApp({
-    apiKey,
-    projectId,
-    authDomain: process.env.FIREBASE_AUTH_DOMAIN || `${projectId}.firebaseapp.com`
-  });
+const ALLOWED_ORIGINS = [
+  'https://carisoft.vercel.app',
+  'https://tauri.localhost',
+  'http://tauri.localhost',
+  'tauri://localhost',
+  'http://localhost:5173'
+];
+
+function setCors(req: any, res: any) {
+  const origin = req.headers.origin;
+  if (origin && ALLOWED_ORIGINS.includes(origin)) {
+    res.setHeader('Access-Control-Allow-Origin', origin);
+  } else {
+    res.setHeader('Access-Control-Allow-Origin', 'https://carisoft.vercel.app');
+  }
+  res.setHeader('Vary', 'Origin');
+  res.setHeader('Access-Control-Allow-Credentials', 'true');
+  res.setHeader('Access-Control-Allow-Methods', 'GET,OPTIONS,PATCH,DELETE,POST,PUT');
+  res.setHeader('Access-Control-Allow-Headers', 'X-CSRF-Token, X-Requested-With, Accept, Accept-Version, Content-Length, Content-MD5, Content-Type, Date, X-Api-Version, Authorization');
 }
 
 export default async function handler(req: any, res: any) {
-  // En-têtes CORS pour Vercel serverless
-  res.setHeader('Access-Control-Allow-Credentials', 'true');
-  res.setHeader('Access-Control-Allow-Origin', '*');
-  res.setHeader('Access-Control-Allow-Methods', 'GET,OPTIONS,PATCH,DELETE,POST,PUT');
-  res.setHeader('Access-Control-Allow-Headers', 'X-CSRF-Token, X-Requested-With, Accept, Accept-Version, Content-Length, Content-MD5, Content-Type, Date, X-Api-Version, Authorization');
+  setCors(req, res);
 
   if (req.method === 'OPTIONS') {
     return res.status(200).end();
   }
 
   if (req.method !== 'POST') {
-    return res.status(405).json({ error: 'Méthode non autorisée. Seul POST est accepté.' });
+    return res.status(405).json({ success: false, error: 'Méthode non autorisée. Seul POST est accepté.' });
   }
 
-  // 1. Vérification de la clé privée Ed25519 (strictement aucune clé par défaut)
   const privateKeyBase64 = process.env.LICENSE_PRIVATE_KEY;
   if (!privateKeyBase64) {
     console.error("Erreur 500: LICENSE_PRIVATE_KEY absente des variables d'environnement.");
@@ -48,151 +86,117 @@ export default async function handler(req: any, res: any) {
     });
   }
 
-  // 2. Vérification des identifiants activator
-  const activatorEmail = process.env.ACTIVATOR_EMAIL;
-  const activatorPassword = process.env.ACTIVATOR_PASSWORD;
-  if (!activatorEmail || !activatorPassword) {
-    console.error("Erreur 500: ACTIVATOR_EMAIL ou ACTIVATOR_PASSWORD manquant.");
-    return res.status(500).json({
-      success: false,
-      error: "Erreur de configuration serveur : les identifiants ACTIVATOR_EMAIL et ACTIVATOR_PASSWORD sont manquants."
-    });
-  }
-
   try {
+    initAdmin();
+    const db = adminApp.firestore();
+
     const { key, machineId, tenantId } = req.body || {};
 
     if (!key || typeof key !== 'string') {
-      return res.status(400).json({ error: "Clé de licence obligatoire." });
+      return res.status(400).json({ success: false, error: "Clé de licence obligatoire." });
     }
     if (!machineId || typeof machineId !== 'string') {
-      return res.status(400).json({ error: "Identifiant PC (machineId) obligatoire." });
+      return res.status(400).json({ success: false, error: "Identifiant PC (machineId) obligatoire." });
     }
     if (!tenantId || typeof tenantId !== 'string') {
-      return res.status(400).json({ error: "Identifiant de l'entreprise (tenantId) obligatoire." });
+      return res.status(400).json({ success: false, error: "Identifiant de l'entreprise (tenantId) obligatoire." });
     }
 
     const cleanKey = key.trim().toUpperCase();
     const cleanMachineId = machineId.trim();
     const cleanTenantId = tenantId.trim();
 
-    // 3. Initialisation du SDK client Firebase
-    const app = getFirebaseClientApp();
-    const auth = getAuth(app);
+    const licenseRef = db.collection('licenses').doc(cleanKey);
+    const serverTime = new Date().toISOString();
+    const nowMs = Date.now();
 
-    // Authentification du compte activator
-    await signInWithEmailAndPassword(auth, activatorEmail, activatorPassword);
-
-    // Initialisation Firestore (avec databaseId si spécifié)
-    const firestore = process.env.FIREBASE_DATABASE_ID
-      ? getFirestore(app, process.env.FIREBASE_DATABASE_ID)
-      : getFirestore(app);
-
-    const licenseRef = doc(firestore, 'licenses', cleanKey);
-
-    // 4. Transaction Firestore garantissant l'atomicité de l'activation
-    const activationResult = await runTransaction(firestore, async (transaction) => {
+    const result = await db.runTransaction(async (transaction: any) => {
       const docSnap = await transaction.get(licenseRef);
 
-      if (!docSnap.exists()) {
+      if (!docSnap.exists) {
         throw new Error("Clé de licence introuvable ou inexistante.");
       }
 
-      const licenseData = docSnap.data();
+      const data = docSnap.data() || {};
 
-      // Règle 1 : Clé révoquée
-      if (licenseData.status === 'revoked') {
+      // 1. Check revoked
+      if (data.status === 'revoked') {
         throw new Error("Cette licence a été révoquée par l'administrateur.");
       }
 
-      // Règle 2 : Vérification du tenantId
-      if (licenseData.tenantId && licenseData.tenantId !== cleanTenantId) {
+      // 2. Check tenantId mismatch
+      if (data.tenantId && data.tenantId !== cleanTenantId) {
         throw new Error("Cette licence n'est pas attribuée à cette entreprise (tenantId incompatible).");
       }
 
-      const now = new Date();
+      let activatedAt = data.activatedAt;
+      let expiresAt = data.expiresAt;
+      const durationDays = Number(data.durationDays) || 30;
 
-      // Règle 3 : Statut "unused" (1re activation)
-      if (licenseData.status === 'unused' || !licenseData.status) {
-        const durationDays = Number(licenseData.durationDays) || 30;
-        const activatedAt = now.toISOString();
-        const expiresAt = new Date(now.getTime() + durationDays * 24 * 60 * 60 * 1000).toISOString();
+      // 3. Check expiration if already active
+      if (expiresAt && new Date(expiresAt).getTime() < nowMs) {
+        transaction.update(licenseRef, { status: 'expired', updatedAt: serverTime });
+        throw new Error("Cette licence a expiré.");
+      }
+
+      if (data.status === 'unused' || !data.status) {
+        // Activate unused license
+        activatedAt = serverTime;
+        expiresAt = new Date(nowMs + durationDays * 24 * 60 * 60 * 1000).toISOString();
 
         transaction.update(licenseRef, {
-          tenantId: cleanTenantId,
+          status: 'active',
           machineId: cleanMachineId,
+          tenantId: cleanTenantId || data.tenantId,
           activatedAt,
           expiresAt,
-          status: 'active',
-          updatedAt: now.toISOString()
+          updatedAt: serverTime
         });
-
-        return {
-          key: cleanKey,
-          tenantId: cleanTenantId,
-          machineId: cleanMachineId,
-          activatedAt,
-          expiresAt
-        };
-      }
-
-      // Règle 4 : Statut "active"
-      if (licenseData.status === 'active') {
-        // Vérifier si la date d'expiration est déjà dépassée
-        if (licenseData.expiresAt && new Date(licenseData.expiresAt).getTime() < now.getTime()) {
-          transaction.update(licenseRef, { status: 'expired', updatedAt: now.toISOString() });
-          throw new Error("Cette licence est expirée.");
+      } else if (data.status === 'active') {
+        // Check machineId match
+        if (data.machineId && data.machineId !== cleanMachineId) {
+          throw new Error("Licence déjà liée à un autre PC.");
         }
-
-        // Même machineId -> réinstallation / reconnexion autorisée
-        if (licenseData.machineId === cleanMachineId) {
-          return {
-            key: cleanKey,
-            tenantId: cleanTenantId,
-            machineId: cleanMachineId,
-            activatedAt: licenseData.activatedAt,
-            expiresAt: licenseData.expiresAt
-          };
+        // Same machineId -> reinstallation allowed, keep original expiresAt
+        if (!data.machineId) {
+          transaction.update(licenseRef, { machineId: cleanMachineId, updatedAt: serverTime });
         }
-
-        // MachineId différent -> Refus strict (liée à un seul PC)
-        throw new Error("Licence déjà utilisée sur un autre ordinateur.");
+      } else if (data.status === 'expired') {
+        throw new Error("Cette licence a expiré.");
       }
 
-      // Règle 5 : Statut "expired"
-      if (licenseData.status === 'expired') {
-        throw new Error("Cette licence est expirée.");
-      }
-
-      throw new Error("Statut de licence inconnu.");
+      return {
+        key: cleanKey,
+        tenantId: cleanTenantId || data.tenantId,
+        machineId: cleanMachineId,
+        activatedAt,
+        expiresAt
+      };
     });
 
-    // 5. Signature cryptographique Ed25519
-    const privateKeyBytes = new Uint8Array(Buffer.from(privateKeyBase64, 'base64'));
-    const payloadString = JSON.stringify(activationResult);
-    const payloadBytes = new Uint8Array(Buffer.from(payloadString, 'utf8'));
+    // Sign payload with Ed25519
+    const payload = {
+      key: result.key,
+      tenantId: result.tenantId,
+      machineId: result.machineId,
+      activatedAt: result.activatedAt,
+      expiresAt: result.expiresAt,
+      serverTime
+    };
 
-    // Signature détachée Ed25519
-    const signatureBytes = nacl.sign.detached(payloadBytes, privateKeyBytes);
-    const signatureBase64 = Buffer.from(signatureBytes).toString('base64');
-    const payloadBase64 = Buffer.from(payloadString, 'utf8').toString('base64');
+    const token = signPayload(payload, privateKeyBase64);
 
-    const signedToken = `${payloadBase64}.${signatureBase64}`;
-
-    // 6. Ajout de serverTime pour la vérification d'horloge
     return res.status(200).json({
       success: true,
-      token: signedToken,
-      payload: activationResult,
-      signature: signatureBase64,
-      serverTime: new Date().toISOString()
+      token,
+      serverTime
     });
 
-  } catch (error: any) {
-    console.error("Erreur api/activate-license:", error);
+  } catch (err: any) {
+    console.error("Erreur api/activate-license:", err);
     return res.status(400).json({
       success: false,
-      error: error.message || "Erreur interne lors de l'activation de la licence."
+      error: err.message || "Erreur lors de l'activation de la licence."
     });
   }
 }

@@ -1,7 +1,6 @@
 import React, { useState, useEffect, useMemo } from 'react';
 import { collection, query, where, getDocs, updateDoc, doc, deleteDoc, setDoc } from 'firebase/firestore';
-import { getFunctions, httpsCallable } from 'firebase/functions';
-import { firestore } from '../../lib/firebase';
+import { firestore, auth } from '../../lib/firebase';
 import { db } from '../../db/db';
 import { 
   Shield, Key, Copy, CheckCircle, AlertTriangle, Users, 
@@ -10,7 +9,22 @@ import {
   Laptop, Ban
 } from 'lucide-react';
 import { EditCompanyModal } from './EditCompanyModal';
-import { generateLicenseKeyString } from '../../lib/licensing';
+
+async function callLicenseAdmin(action: string, idToken: string, params: any) {
+  const response = await fetch('https://carisoft.vercel.app/api/admin-licenses', {
+    method: 'POST',
+    headers: {
+      'Content-Type': 'application/json',
+      'Authorization': `Bearer ${idToken}`
+    },
+    body: JSON.stringify({ action, ...params })
+  });
+  const data = await response.json();
+  if (!response.ok || !data.success) {
+    throw new Error(data.error || "Erreur lors de l'appel administrateur des licences.");
+  }
+  return data;
+}
 
 export function SuperAdminPanel() {
   const [customers, setCustomers] = useState<any[]>([]);
@@ -59,17 +73,21 @@ export function SuperAdminPanel() {
   const fetchLicenses = async () => {
     try {
       setLoadingLicenses(true);
-      const q = query(collection(firestore, 'licenses'));
-      const snapshot = await getDocs(q);
-      const data: any[] = snapshot.docs.map(d => ({ key: d.id, id: d.id, ...d.data() }));
-      data.sort((a, b) => {
-        const dateA = a.createdAt ? new Date(a.createdAt).getTime() : 0;
-        const dateB = b.createdAt ? new Date(b.createdAt).getTime() : 0;
-        return dateB - dateA;
-      });
-      setLicenses(data);
+      const currentUser = auth.currentUser;
+      if (!currentUser) return;
+      const idToken = await currentUser.getIdToken();
+      const result = await callLicenseAdmin("list", idToken, {});
+      if (result.success && result.licenses) {
+        const data = result.licenses;
+        data.sort((a: any, b: any) => {
+          const dateA = a.createdAt ? new Date(a.createdAt).getTime() : 0;
+          const dateB = b.createdAt ? new Date(b.createdAt).getTime() : 0;
+          return dateB - dateA;
+        });
+        setLicenses(data);
+      }
     } catch (error) {
-      console.warn("Erreur lecture licenses:", error);
+      console.warn("Erreur lecture licenses via admin API:", error);
     } finally {
       setLoadingLicenses(false);
     }
@@ -84,27 +102,26 @@ export function SuperAdminPanel() {
 
     try {
       setIsGeneratingLicense(true);
-      const newKey = generateLicenseKeyString();
       const duration = Number(genDurationDays) || 30;
-      const maxMachines = Number(genMaxMachines) || 1;
 
-      await setDoc(doc(firestore, 'licenses', newKey), {
-        tenantId: genTenantId.trim(),
+      const currentUser = auth.currentUser;
+      if (!currentUser) {
+        throw new Error("Utilisateur SuperAdmin non authentifié.");
+      }
+      const idToken = await currentUser.getIdToken();
+
+      const result = await callLicenseAdmin("create", idToken, {
         durationDays: duration,
-        maxMachines: maxMachines,
-        status: 'unused',
-        machineId: null,
-        activatedAt: null,
-        expiresAt: null,
-        createdAt: new Date().toISOString(),
-        createdBy: 'SuperAdmin'
+        tenantId: genTenantId.trim(),
+        maxMachines: 1
       });
 
+      const newKey = result.key;
       setNewlyGeneratedKey(newKey);
       await fetchLicenses();
       setNotification({
         type: 'success',
-        message: `Licence ${newKey} générée avec succès pour l'entreprise ${genTenantId.trim()} !`,
+        message: `Licence ${newKey} (${duration} jours) générée avec succès pour ${genTenantId.trim()} !`,
         key: newKey
       });
     } catch (err: any) {
@@ -124,11 +141,12 @@ export function SuperAdminPanel() {
     }
 
     try {
-      await updateDoc(doc(firestore, 'licenses', licenseKey), {
-        status: 'revoked',
-        revokedAt: new Date().toISOString(),
-        updatedAt: new Date().toISOString()
-      });
+      const currentUser = auth.currentUser;
+      if (!currentUser) throw new Error("Non authentifié");
+      const idToken = await currentUser.getIdToken();
+
+      await callLicenseAdmin("revoke", idToken, { key: licenseKey });
+
       await fetchLicenses();
       setNotification({
         type: 'info',
@@ -280,7 +298,7 @@ export function SuperAdminPanel() {
                   email: email,
                   phone: '',
                   address: t.ip ? `IP: ${t.ip}` : '',
-                  licensePlan: 'Essai Gratuit (5 Jours)',
+                  licensePlan: 'Essai Gratuit (30 Jours)',
                   licenseStatus: 'essai',
                   status: 'essai',
                   licenseExpiry: '',
@@ -435,22 +453,34 @@ export function SuperAdminPanel() {
   const handleQuickExtend = async (customer: any, monthsToAdd: number) => {
     setGeneratingKey(customer.uid);
     try {
-      const currentExpiry = customer.licenseExpiry ? new Date(customer.licenseExpiry).getTime() : Date.now();
-      const baseTime = !isNaN(currentExpiry) ? Math.max(Date.now(), currentExpiry) : Date.now();
-      const newExpiryDate = new Date(baseTime + monthsToAdd * 30.5 * 24 * 60 * 60 * 1000).toISOString();
-
-      const cleanCompany = (customer.email?.split('@')[0] || customer.name || 'CARRIE').toUpperCase().replace(/[^A-Z0-9]/g, '').slice(0, 6);
-      const planTag = monthsToAdd >= 12 ? 'PAID1Y' : monthsToAdd >= 6 ? 'PAID6M' : 'PAID3M';
-      const rand = Math.random().toString(36).substring(2, 6).toUpperCase();
-      const time = Date.now().toString(36).toUpperCase().slice(-4);
-      const newKey = `CARI-2026-${planTag}-${cleanCompany}-${time}-${rand}`;
-
+      const currentUser = auth.currentUser;
+      if (!currentUser) throw new Error("Utilisateur SuperAdmin non authentifié.");
+      const idToken = await currentUser.getIdToken();
       const docId = customer.uid || customer.id;
+
+      let keyToUse = customer.licenseKey;
+      let newExpiryDate: string;
+
+      if (keyToUse) {
+        const res = await callLicenseAdmin("extend", idToken, {
+          key: keyToUse,
+          extendDays: monthsToAdd * 30
+        });
+        newExpiryDate = res.license?.expiresAt || new Date(Date.now() + monthsToAdd * 30 * 86400000).toISOString();
+      } else {
+        const res = await callLicenseAdmin("create", idToken, {
+          durationDays: monthsToAdd * 30,
+          tenantId: docId || customer.email || 'customer'
+        });
+        keyToUse = res.key;
+        newExpiryDate = res.license?.expiresAt || new Date(Date.now() + monthsToAdd * 30 * 86400000).toISOString();
+      }
+
       if (docId) {
         const companyRef = doc(firestore, 'companies', docId);
         await setDoc(companyRef, {
           licenseExpiry: newExpiryDate,
-          licenseKey: newKey,
+          licenseKey: keyToUse,
           licensePlan: monthsToAdd >= 12 ? 'PRO Annuel (1 An)' : `PRO (${monthsToAdd} Mois)`,
           licenseStatus: 'active',
           status: 'actif',
@@ -460,21 +490,21 @@ export function SuperAdminPanel() {
 
       // Also copy key
       try {
-        await navigator.clipboard.writeText(newKey);
+        await navigator.clipboard.writeText(keyToUse);
       } catch (e) {
         console.warn("Presse-papier:", e);
       }
       setNotification({
         type: 'success',
-        message: `Licence prolongée de ${monthsToAdd} mois pour ${customer.name || customer.email} ! Clé générée et copiée :`,
-        key: newKey
+        message: `Licence prolongée de ${monthsToAdd} mois pour ${customer.name || customer.email} ! Clé officielle Firestore :`,
+        key: keyToUse
       });
-      await fetchCustomers();
-    } catch (error) {
+      await Promise.all([fetchCustomers(), fetchLicenses()]);
+    } catch (error: any) {
       console.warn("Erreur prolongation:", error);
       setNotification({
         type: 'error',
-        message: "Erreur lors de la prolongation de la licence."
+        message: error?.message || "Erreur lors de la prolongation de la licence."
       });
     } finally {
       setGeneratingKey(null);
@@ -485,8 +515,17 @@ export function SuperAdminPanel() {
   const handleGenerateAndSendRequest = async (request: any, months: number) => {
     setGeneratingKey(request.id);
     try {
-      const cleanCompany = (request.email?.split('@')[0] || request.nom || 'COMPANY').toUpperCase().replace(/[^A-Z0-9]/g, '').slice(0, 6);
-      const newKey = `CARI-2026-PAID1Y-${cleanCompany}-${Date.now().toString(36).toUpperCase().slice(-4)}-${Math.random().toString(36).substring(2, 6).toUpperCase()}-PRO`;
+      const currentUser = auth.currentUser;
+      if (!currentUser) throw new Error("Utilisateur SuperAdmin non authentifié.");
+      const idToken = await currentUser.getIdToken();
+
+      const tenantId = request.companyId || request.email || request.nom || 'customer';
+      const res = await callLicenseAdmin("create", idToken, {
+        durationDays: months * 30,
+        tenantId
+      });
+      const newKey = res.key;
+      const expiryDate = res.license?.expiresAt || new Date(Date.now() + months * 30 * 86400000).toISOString();
 
       // Update request status
       const requestRef = doc(firestore, 'activationRequests', request.id);
@@ -498,7 +537,6 @@ export function SuperAdminPanel() {
 
       // Also create company record so it appears in Parc Clients immediately
       const newCompanyRef = doc(collection(firestore, 'companies'));
-      const expiryDate = new Date(Date.now() + months * 30.5 * 24 * 60 * 60 * 1000).toISOString();
       await setDoc(newCompanyRef, {
         name: (request.nom || 'ENTREPRISE').toUpperCase(),
         email: request.email?.toLowerCase(),
@@ -506,7 +544,7 @@ export function SuperAdminPanel() {
         phone: request.telephone || '',
         address: `${request.commune || ''} ${request.wilaya || ''}`.trim(),
         licenseKey: newKey,
-        licensePlan: request.plan || 'PRO 1 An',
+        licensePlan: request.plan || `PRO ${months} Mois`,
         licenseStatus: 'active',
         status: 'actif',
         licenseExpiry: expiryDate,
@@ -518,18 +556,18 @@ export function SuperAdminPanel() {
       } catch (e) {
         console.warn("Presse-papier:", e);
       }
+
       setNotification({
         type: 'success',
-        message: `Demande validée avec succès pour ${request.nom || request.email} ! Clé générée et copiée :`,
+        message: `Licence ${months} mois créée dans Firestore pour ${request.nom} ! Clé copiée :`,
         key: newKey
       });
-      fetchRequests();
-      fetchCustomers();
-    } catch (error) {
-      console.warn("Erreur traitement demande:", error);
+      await Promise.all([fetchRequests(), fetchCustomers(), fetchLicenses()]);
+    } catch (error: any) {
+      console.warn("Erreur approbation demande:", error);
       setNotification({
         type: 'error',
-        message: "Erreur lors de la mise à jour de la demande."
+        message: error?.message || "Erreur lors de la génération de la licence."
       });
     } finally {
       setGeneratingKey(null);
@@ -1601,18 +1639,30 @@ export function SuperAdminPanel() {
                 <div className="grid grid-cols-2 gap-3">
                   <div>
                     <label className="block text-xs font-semibold text-slate-300 mb-1">
-                      Durée en jours
+                      Durée de validité
                     </label>
+                    <select
+                      value={genDurationDays}
+                      onChange={(e) => setGenDurationDays(Number(e.target.value))}
+                      className="w-full bg-slate-950 border border-slate-800 rounded-xl px-3.5 py-2.5 text-xs text-white focus:outline-none focus:border-blue-500 cursor-pointer mb-2"
+                    >
+                      <option value={30}>30 jours (Essai 1 Mois - Recommandé)</option>
+                      <option value={90}>90 jours (3 mois - Test)</option>
+                      <option value={180}>180 jours (6 mois)</option>
+                      <option value={365}>365 jours (1 an - Standard)</option>
+                      <option value={730}>730 jours (2 ans)</option>
+                    </select>
                     <input
                       type="number"
                       min={1}
                       max={3650}
                       required
+                      placeholder="Ou nb de jours personnalisé"
                       value={genDurationDays}
                       onChange={(e) => setGenDurationDays(Number(e.target.value))}
-                      className="w-full bg-slate-950 border border-slate-800 rounded-xl px-3.5 py-2.5 text-xs text-white focus:outline-none focus:border-blue-500"
+                      className="w-full bg-slate-950 border border-slate-800 rounded-xl px-3.5 py-2 text-xs text-white focus:outline-none focus:border-blue-500"
                     />
-                    <p className="text-[11px] text-slate-500 mt-1">Défaut: 30 jours</p>
+                    <p className="text-[11px] text-slate-500 mt-1">Démarre à la 1re activation sur le PC.</p>
                   </div>
 
                   <div>

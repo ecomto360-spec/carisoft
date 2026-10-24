@@ -4,7 +4,8 @@ import {
   Crown, X, ArrowRight, CheckCircle2, AlertCircle, Phone, Mail
 } from 'lucide-react';
 import { Button } from '../../components/ui/Button';
-import { OFFICIAL_PAID_PLANS, verifyLicenseKey } from '../../lib/security';
+import { OFFICIAL_PAID_PLANS } from '../../lib/security';
+import { activateLicense } from '../../lib/licensing';
 import { db } from '../../db/db';
 
 interface PaidLicenseModalProps {
@@ -37,15 +38,9 @@ export function PaidLicenseModal({ isOpen, onClose, onSuccess }: PaidLicenseModa
       const settings = await db.settings.get(1);
       const companyName = settings?.name || 'SARL MAHAJIR SIDAR';
       
-      const verification = await verifyLicenseKey(inputKey.trim(), companyName);
-      if (!verification.valid) {
-        setError(verification.reason || 'Clé de licence invalide ou non signée par l\'éditeur.');
-        setActivating(false);
-        return;
-      }
-
+      const payload = await activateLicense(inputKey.trim(), companyName);
       const planObj = OFFICIAL_PAID_PLANS.find(p => p.id === selectedPlanId) || OFFICIAL_PAID_PLANS[2];
-      const expiry = verification.expiryDate || new Date(Date.now() + planObj.durationDays * 24 * 60 * 60 * 1000).toISOString();
+      const expiry = payload.expiresAt || new Date(Date.now() + planObj.durationDays * 24 * 60 * 60 * 1000).toISOString();
 
       await db.settings.update(1, {
         licenseKey: inputKey.trim(),
@@ -59,9 +54,9 @@ export function PaidLicenseModal({ isOpen, onClose, onSuccess }: PaidLicenseModa
         if (onSuccess) onSuccess();
         onClose();
       }, 1500);
-    } catch (e) {
+    } catch (e: any) {
       console.error(e);
-      setError('Erreur lors de l\'activation de la licence.');
+      setError(e?.message || 'Erreur lors de l\'activation de la licence.');
     } finally {
       setActivating(false);
     }
@@ -174,7 +169,7 @@ export function PaidLicenseModal({ isOpen, onClose, onSuccess }: PaidLicenseModa
           <div className="flex flex-col sm:flex-row gap-2.5">
             <input 
               type="text"
-              placeholder="CARI-2026-PAID1Y-XXXX-XXXX"
+              placeholder="CARI-XXXX-XXXX-XXXX-XXXX"
               value={inputKey}
               onChange={(e) => setInputKey(e.target.value)}
               className="flex-1 px-4 py-2.5 bg-slate-900 border border-slate-700 rounded-xl text-xs font-mono text-blue-300 placeholder-slate-500 focus:outline-none focus:ring-2 focus:ring-blue-500"

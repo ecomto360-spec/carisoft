@@ -1,7 +1,7 @@
 import React, { useState, useEffect } from 'react';
 import { useAuthStore } from '../store/authStore';
 import { startLicenseWatcher, type LicenseCheckResult, verifyLicenseOffline } from '../lib/licensing';
-import { getRemainingTrialDays, initializeTrial } from '../lib/trialManager';
+import { getRemainingTrialDays } from '../lib/trialManager';
 import { ActivationRequestModal } from './ActivationRequestModal';
 import { LicenseActivationModal } from './licensing/LicenseActivationModal';
 import { AlertTriangle, Lock, Key, Clock, ShieldAlert } from 'lucide-react';
@@ -27,13 +27,8 @@ export function TrialBanner() {
     // 1. Démarrer le watcher de licence (vérification au démarrage + toutes les heures)
     const unsubscribe = startLicenseWatcher(tenantId, async (res) => {
       setLicenseResult(res);
-
-      // Si aucune licence n'est enregistrée, vérifier la période d'essai 5 jours de base
-      if (res.status === 'none') {
-        await initializeTrial(tenantId);
-        const remaining = await getRemainingTrialDays(tenantId);
-        setTrialDaysLeft(remaining);
-      }
+      const remaining = typeof res.days_remaining === 'number' ? res.days_remaining : await getRemainingTrialDays(tenantId);
+      setTrialDaysLeft(remaining);
     });
 
     // 2. Écouteur d'événement d'activation immédiate
@@ -106,27 +101,25 @@ export function TrialBanner() {
     );
   }
 
-  // CAS 5 : Aucune licence - Période d'essai initiale terminée
-  if (licenseResult?.status === 'none' && trialDaysLeft !== null && trialDaysLeft <= 0) {
+  // CAS 5 : Aucune licence valide - Verrouillage absolu (aucun accès sans licence valide)
+  if (licenseResult?.status === 'none' || !licenseResult?.valid) {
     return (
       <LockScreen 
         icon={<Lock className="w-10 h-10 text-rose-500" />}
-        title="Période d'essai terminée"
-        message="Votre période d'essai gratuit est terminée. Pour continuer à utiliser CARISOFT.next, veuillez activer votre licence."
+        title="Activation requise"
+        message="Aucune licence active n'a été détectée. Pour accéder à CARISOFT.next, veuillez activer votre clé de licence officielle."
         onOpenActivation={() => setShowActivationModal(true)}
         onOpenRequest={() => setShowRequestModal(true)}
       />
     );
   }
 
-  // ✅ CAS 6 : Licence active mais approche de l'échéance (Avertissement J-10 et moins)
-  // Le bandeau DISPARAÎT automatiquement si la licence est valide et qu'il reste PLUS de 10 jours.
-  const isNearExpiry = licenseResult?.status === 'active' && licenseResult.daysRemaining <= 10;
-  const isTrialActive = licenseResult?.status === 'none' && trialDaysLeft !== null && trialDaysLeft > 0;
+  // CAS 6 : Licence active mais approche de l'échéance (Avertissement J-7, J-3, J-1)
+  const isNearExpiry = licenseResult?.status === 'active' && licenseResult.daysRemaining <= 7;
 
-  if (isNearExpiry || isTrialActive) {
-    const days = isNearExpiry ? licenseResult!.daysRemaining : trialDaysLeft!;
-    const label = isNearExpiry ? "Licence" : "Période d'essai";
+  if (isNearExpiry) {
+    const days = licenseResult.daysRemaining;
+    const label = "Licence";
 
     // Style plus urgent à J-3 et J-1
     const isUrgent = days <= 3;

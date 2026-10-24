@@ -44,9 +44,10 @@ service cloud.firestore {
       allow read, update, delete: if true;
     }
 
-    // Licenses (SuperAdmin OU compte serveur activator)
+    // Licenses (Interdiction absolue d'écriture client, géré uniquement par les API serveur Admin SDK)
     match /licenses/{licenseKey} {
-      allow read, write: if isSuperAdmin() || request.auth.uid == 'bTXFA21WwSa3h7YtvHFXEciZFUv1';
+      allow read: if true;
+      allow write: if false;
     }
 
     // Customers (SaaS logic - read by SuperAdmin)
@@ -66,8 +67,8 @@ service cloud.firestore {
 
     // Règle d'isolation stricte par défaut pour toutes les autres collections (Multi-tenant RLS)
     match /{collectionName}/{docId} {
-      allow read, update, delete: if isSuperAdmin() || (isAuthenticated() && resource.data.companyId == getUserCompanyId());
-      allow create: if isSuperAdmin() || (isAuthenticated() && request.resource.data.companyId == getUserCompanyId());
+      allow read, update, delete: if collectionName != 'licenses' && (isSuperAdmin() || (isAuthenticated() && resource.data.companyId == getUserCompanyId()));
+      allow create: if collectionName != 'licenses' && (isSuperAdmin() || (isAuthenticated() && request.resource.data.companyId == getUserCompanyId()));
     }
   }
 }

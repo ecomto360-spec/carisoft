@@ -1,9 +1,8 @@
 #![cfg_attr(not(debug_assertions), windows_subsystem = "windows")]
 
-// Déclaration du module de licence (le fichier license.rs doit exister dans le même dossier)
-mod license;
-
 use sha2::{Digest, Sha256};
+
+mod license;
 
 /// Commande Tauri retournant l'identifiant matériel unique de la machine,
 /// hashé en SHA-256 pour assurer anonymat et empreinte infalsifiable.

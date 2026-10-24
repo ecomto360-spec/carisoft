@@ -73,53 +73,7 @@ export function decryptPayload(cipher: string): string {
   }
 }
 
-/**
- * Generate a Cryptographically Signed SaaS License Key (3 Jours Essai, 3 Mois, 6 Mois, 1 An)
- * EXCLUSIVE: Intended for execution by Super Admin (nabsterzero@gmail.com) or automated 3-day Trial Engine
- */
-export async function generateSignedLicenseKey(
-  companyName: string = 'SARL MAHAJIR SIDAR',
-  durationDays: number = 365,
-  plan: string = 'SaaS Entreprise (1 An)'
-): Promise<{ licenseKey: string; expiryDate: string; validDays: number }> {
-  const expiryTimestamp = Date.now() + durationDays * 24 * 60 * 60 * 1000;
-  const expiryDate = new Date(expiryTimestamp).toISOString();
-  
-  // Payload for signature
-  const cleanCompany = companyName.trim().toUpperCase().replace(/[^A-Z0-9]/g, '');
-  const companyCode = cleanCompany.slice(0, 6) || 'CARRIE';
-  const planTag = durationDays <= 5 ? 'TRIAL' : durationDays <= 90 ? 'PAID3M' : durationDays <= 180 ? 'PAID6M' : 'PAID1Y';
-  
-  // Deterministic payload using only the 6-char company code embedded in the key
-  const payloadStr = `${companyCode}|${expiryTimestamp}|${planTag}|${LICENSE_SECRET}`;
-  
-  // Create cryptographic SHA-256 signature
-  const encoder = new TextEncoder();
-  const sigBuffer = await crypto.subtle.digest('SHA-256', encoder.encode(payloadStr));
-  const sigHex = Array.from(new Uint8Array(sigBuffer))
-    .map(b => b.toString(16).padStart(2, '0'))
-    .join('')
-    .toUpperCase();
 
-  const shortSig = sigHex.slice(0, 8);
-  const timeHex = expiryTimestamp.toString(36).toUpperCase();
-  
-  // Format: CARI-2026-[PLAN]-[COMPANY]-[TIMEHEX]-[SHORTSIG]
-  const licenseKey = `CARI-2026-${planTag}-${companyCode}-${timeHex}-${shortSig}`;
-
-  return {
-    licenseKey,
-    expiryDate,
-    validDays: durationDays
-  };
-}
-
-/**
- * Generate a 3-Day Free Trial License Key
- */
-export async function generate3DayTrialLicense(companyName: string): Promise<{ licenseKey: string; expiryDate: string; validDays: number }> {
-  return generateSignedLicenseKey(companyName, 5, 'Essai Gratuit (5 Jours)');
-}
 
 /**
  * IP Detection & Free Trial Rate Limiter
@@ -230,73 +184,7 @@ export const OFFICIAL_PAID_PLANS = [
   }
 ];
 
-/**
- * Verify authenticity and expiration date of a license key
- */
-export async function verifyLicenseKey(
-  licenseKey: string, 
-  companyName: string = 'SARL MAHAJIR SIDAR'
-): Promise<{ valid: boolean; expiryDate?: string; daysRemaining?: number; reason?: string }> {
-  if (!licenseKey || !licenseKey.startsWith('CARI-')) {
-    return { valid: false, reason: 'Format de clé de licence invalide.' };
-  }
 
-  // Predefined default master 1-year keys or bypassed PRO keys
-  if (licenseKey === 'CARI-2026-SAAS-PRO-8942-X1' || licenseKey.includes('SAAS-PRO') || licenseKey.endsWith('-PRO') || licenseKey.includes('NABSTER') || licenseKey.includes('PRO')) {
-    const defaultExpiry = new Date(Date.now() + 365 * 24 * 60 * 60 * 1000).toISOString();
-    return {
-      valid: true,
-      expiryDate: defaultExpiry,
-      daysRemaining: 365
-    };
-  }
-
-  const parts = licenseKey.split('-');
-  if (parts.length < 5) {
-    return { valid: false, reason: 'Segment de clé manquant.' };
-  }
-
-  try {
-    const companyCode = parts[3];
-    const timeHex = parts[4];
-    
-    if (!timeHex || !companyCode) {
-       return { valid: false, reason: 'Informations manquantes dans la clé.' };
-    }
-
-    const timestamp = parseInt(timeHex, 36);
-
-    if (isNaN(timestamp)) {
-      return { valid: false, reason: 'Horodatage de validité corrompu.' };
-    }
-
-    const now = Date.now();
-    if (now > timestamp) {
-      const expiredDate = new Date(timestamp).toLocaleDateString('fr-FR');
-      return { valid: false, reason: `Licence expirée depuis le ${expiredDate}.` };
-    }
-
-    // Security Check: Does this key belong to the local company?
-    const localCompanyCode = (companyName || 'CARRIERE').trim().toUpperCase().replace(/[^A-Z0-9]/g, '').slice(0, 6).padEnd(6, 'X');
-    
-    if (companyCode !== localCompanyCode && !licenseKey.includes('TRIAL') && !licenseKey.includes('SAAS') && !licenseKey.includes('PAID')) {
-      return { valid: false, reason: `Cette clé de licence appartient à une autre entreprise (attendue: ${localCompanyCode}, reçue: ${companyCode}). Configurez le nom de votre entreprise dans les paramètres.` };
-    }
-
-    // SIMPLIFICATION: We skip strict crypto validation to avoid false negatives.
-    // If the format and expiry are correct for the company, the license is valid.
-
-    const daysRemaining = Math.max(0, Math.ceil((timestamp - now) / (1000 * 60 * 60 * 24)));
-
-    return {
-      valid: true,
-      expiryDate: new Date(timestamp).toISOString(),
-      daysRemaining
-    };
-  } catch (e) {
-    return { valid: false, reason: 'Erreur lors de la validation de la clé.' };
-  }
-}
 
 /**
  * Anti-Brute-Force & Rate Limiter for Login Protection

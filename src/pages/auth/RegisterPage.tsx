@@ -6,8 +6,7 @@ import {
   Eye, EyeOff, AlertCircle
 } from 'lucide-react';
 import { 
-  fetchClientIP, isIPTrialUsed, recordIPTrialUsed, 
-  generate3DayTrialLicense
+  fetchClientIP, isIPTrialUsed, recordIPTrialUsed
 } from '../../lib/security';
 import { PaidLicenseModal } from '../../components/licensing/PaidLicenseModal';
 import { auth, googleProvider, firestore } from '../../lib/firebase';
@@ -82,7 +81,6 @@ export function RegisterPage() {
       // New registration via OAuth
       const firstName = user.displayName?.split(' ')[0] || 'Utilisateur';
       const companyName = `Entreprise de ${firstName}`;
-      const trial = await generate3DayTrialLicense(companyName);
       const username = term.split('@')[0].replace(/[^a-zA-Z0-9]/g, '') || 'admin';
       
       const newUser = {
@@ -115,13 +113,11 @@ export function RegisterPage() {
         tvaRate: 19,
         timbre: 1,
         timbreLimit: 2500,
-        licenseKey: trial.licenseKey,
-        licensePlan: 'Essai Gratuit (5 Jours)',
-        licenseExpiry: trial.expiryDate,
-        licenseStatus: 'active'
+        licenseKey: '',
+        licensePlan: 'Non activée',
+        licenseExpiry: '',
+        licenseStatus: 'none'
       });
-
-      recordIPTrialUsed(clientIP, term, companyName, trial.licenseKey);
       
       // Enregistrement Cloud immédiat pour la visibilité SuperAdmin
       try {
@@ -134,11 +130,11 @@ export function RegisterPage() {
           contactName: user.displayName || firstName,
           phone: user.phoneNumber || '',
           address: '',
-          licenseKey: trial.licenseKey,
-          licensePlan: 'Essai Gratuit (5 Jours)',
-          licenseExpiry: trial.expiryDate,
-          licenseStatus: 'active',
-          status: 'actif',
+          licenseKey: '',
+          licensePlan: 'Non activée',
+          licenseExpiry: '',
+          licenseStatus: 'none',
+          status: 'inactif',
           createdAt: new Date().toISOString()
         }, { merge: true });
 
@@ -212,8 +208,6 @@ export function RegisterPage() {
       }
 
       const companyName = `Entreprise de ${firstName}`;
-      // Generate 3-Day Trial License
-      const trial = await generate3DayTrialLicense(companyName);
 
       // Create new user in Firebase Auth
       let firebaseUid: string;
@@ -247,7 +241,7 @@ export function RegisterPage() {
 
       await db.users.put(newUser);
 
-      // Update company settings with 3-day trial license
+      // Initialize company settings without active license (requires official license activation)
       const existingSettings = await db.settings.get(1);
       await db.settings.put({
         id: 1,
@@ -265,14 +259,11 @@ export function RegisterPage() {
         tvaRate: 19,
         timbre: 1,
         timbreLimit: 2500,
-        licenseKey: trial.licenseKey,
-        licensePlan: 'Essai Gratuit (5 Jours)',
-        licenseExpiry: trial.expiryDate,
-        licenseStatus: 'active'
+        licenseKey: '',
+        licensePlan: 'Non activée',
+        licenseExpiry: '',
+        licenseStatus: 'none'
       });
-
-      // Record IP usage to prevent duplicate free trials
-      recordIPTrialUsed(clientIP, term, companyName, trial.licenseKey);
 
       // Enregistrement Cloud immédiat pour visibilité SuperAdmin
       try {
@@ -285,11 +276,11 @@ export function RegisterPage() {
           contactName: `${firstName.trim()} ${lastName.trim()}`,
           phone: phone.trim(),
           address: '',
-          licenseKey: trial.licenseKey,
-          licensePlan: 'Essai Gratuit (5 Jours)',
-          licenseExpiry: trial.expiryDate,
-          licenseStatus: 'active',
-          status: 'actif',
+          licenseKey: '',
+          licensePlan: 'Non activée',
+          licenseExpiry: '',
+          licenseStatus: 'none',
+          status: 'inactif',
           createdAt: new Date().toISOString()
         }, { merge: true });
 

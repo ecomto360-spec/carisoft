@@ -1,163 +1,217 @@
-import { initializeApp, getApps, getApp } from 'firebase/app';
-import { getAuth, signInWithEmailAndPassword } from 'firebase/auth';
-import { getFirestore, doc, setDoc, getDoc, updateDoc } from 'firebase/firestore';
+import * as admin from 'firebase-admin';
+import crypto from 'crypto';
 
-// Configuration Firebase
-function getFirebaseClientApp() {
-  const existing = getApps();
-  if (existing.length > 0) {
-    return getApp();
+const adminApp: any = admin;
+
+const ALLOWED_ORIGINS = [
+  'https://carisoft.vercel.app',
+  'https://tauri.localhost',
+  'http://tauri.localhost',
+  'tauri://localhost',
+  'http://localhost:5173'
+];
+
+function setCors(req: any, res: any) {
+  const origin = req.headers.origin;
+  if (origin && ALLOWED_ORIGINS.includes(origin)) {
+    res.setHeader('Access-Control-Allow-Origin', origin);
+  } else {
+    res.setHeader('Access-Control-Allow-Origin', 'https://carisoft.vercel.app');
   }
-  const apiKey = process.env.FIREBASE_API_KEY;
-  const projectId = process.env.FIREBASE_PROJECT_ID;
+  res.setHeader('Vary', 'Origin');
+  res.setHeader('Access-Control-Allow-Credentials', 'true');
+  res.setHeader('Access-Control-Allow-Methods', 'GET,OPTIONS,PATCH,DELETE,POST,PUT');
+  res.setHeader('Access-Control-Allow-Headers', 'X-CSRF-Token, X-Requested-With, Accept, Accept-Version, Content-Length, Content-MD5, Content-Type, Date, X-Api-Version, Authorization');
+}
 
-  if (!apiKey || !projectId) {
-    throw new Error("Variables d'environnement Firebase obligatoires.");
+function initAdmin() {
+  if (!adminApp.apps?.length && !adminApp.getApps?.()?.length) {
+    const serviceAccountEnv = process.env.FIREBASE_SERVICE_ACCOUNT;
+    if (serviceAccountEnv) {
+      try {
+        const serviceAccount = JSON.parse(serviceAccountEnv);
+        adminApp.initializeApp({
+          credential: adminApp.credential.cert(serviceAccount)
+        });
+      } catch (e) {
+        console.error("Failed to parse FIREBASE_SERVICE_ACCOUNT JSON:", e);
+      }
+    } else if (process.env.FIREBASE_PROJECT_ID && process.env.FIREBASE_CLIENT_EMAIL && process.env.FIREBASE_PRIVATE_KEY) {
+      adminApp.initializeApp({
+        credential: adminApp.credential.cert({
+          projectId: process.env.FIREBASE_PROJECT_ID,
+          clientEmail: process.env.FIREBASE_CLIENT_EMAIL,
+          privateKey: process.env.FIREBASE_PRIVATE_KEY.replace(/\\n/g, '\n')
+        })
+      });
+    } else {
+      adminApp.initializeApp();
+    }
   }
+}
 
-  return initializeApp({
-    apiKey,
-    projectId,
-    authDomain: process.env.FIREBASE_AUTH_DOMAIN || `${projectId}.firebaseapp.com`
-  });
+function generateKeyString(): string {
+  const chars = '23456789ABCDEFGHJKLMNPQRSTUVWXYZ';
+  const getBlock = (len: number) => {
+    const arr = new Uint8Array(len);
+    crypto.getRandomValues(arr);
+    let str = '';
+    for (let i = 0; i < len; i++) {
+      str += chars[arr[i] % chars.length];
+    }
+    return str;
+  };
+  return `CARI-${getBlock(4)}-${getBlock(4)}-${getBlock(4)}-${getBlock(4)}`;
 }
 
 export default async function handler(req: any, res: any) {
-  // En-têtes CORS
-  res.setHeader('Access-Control-Allow-Credentials', 'true');
-  res.setHeader('Access-Control-Allow-Origin', '*');
-  res.setHeader('Access-Control-Allow-Methods', 'GET,OPTIONS,PATCH,DELETE,POST,PUT');
-  res.setHeader('Access-Control-Allow-Headers', 'X-CSRF-Token, X-Requested-With, Accept, Accept-Version, Content-Length, Content-MD5, Content-Type, Date, X-Api-Version, Authorization');
+  setCors(req, res);
 
   if (req.method === 'OPTIONS') {
     return res.status(200).end();
   }
 
   if (req.method !== 'POST') {
-    return res.status(405).json({ error: 'Méthode non autorisée.' });
+    return res.status(405).json({ success: false, error: 'Méthode non autorisée.' });
   }
-
-  const { action, params } = req.body || {};
-  const authHeader = req.headers.authorization;
-
-  if (!authHeader?.startsWith('Bearer ')) {
-    return res.status(401).json({ error: "Token d'authentification manquant." });
-  }
-
-  const idToken = authHeader.split('Bearer ')[1];
 
   try {
-    // 1. Vérifier l'identité de l'appelant via Identity Toolkit
-    const verifyRes = await fetch(`https://identitytoolkit.googleapis.com/v1/accounts:lookup?key=${process.env.FIREBASE_API_KEY}`, {
-      method: 'POST',
-      headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({ idToken })
-    });
-    
-    const verifyData = await verifyRes.json();
-    if (!verifyData.users || verifyData.users.length === 0) {
-      return res.status(401).json({ error: "Token invalide ou expiré." });
+    initAdmin();
+
+    const authHeader = req.headers.authorization;
+    if (!authHeader || !authHeader.startsWith('Bearer ')) {
+      return res.status(401).json({ success: false, error: "Jeton d'authentification manquant." });
     }
 
-    const email = verifyData.users[0].email;
-    const superAdmins = (process.env.SUPERADMIN_EMAILS || "").split(',').map((e: string) => e.trim());
-    
-    if (!superAdmins.includes(email)) {
-      return res.status(403).json({ error: "Accès SuperAdmin requis. Votre compte n'est pas autorisé." });
+    const idToken = authHeader.split('Bearer ')[1];
+    const decodedToken = await adminApp.auth().verifyIdToken(idToken);
+
+    const superAdminEmails = (process.env.SUPERADMIN_EMAILS || '').split(',').map(e => e.trim().toLowerCase());
+    const userEmail = (decodedToken.email || '').toLowerCase();
+    const isAdminClaim = decodedToken.admin === true || decodedToken.role === 'superadmin';
+    const isSuperAdminEmail = superAdminEmails.includes(userEmail) && decodedToken.email_verified === true;
+
+    if (!isAdminClaim && !isSuperAdminEmail) {
+      return res.status(403).json({ success: false, error: "Accès refusé : privilèges SuperAdmin requis." });
     }
 
-    // 2. Initialiser Firebase et authentifier l'activateur
-    const app = getFirebaseClientApp();
-    const auth = getAuth(app);
-    
-    await signInWithEmailAndPassword(auth, process.env.ACTIVATOR_EMAIL!, process.env.ACTIVATOR_PASSWORD!);
-    
-    const firestore = process.env.FIREBASE_DATABASE_ID
-      ? getFirestore(app, process.env.FIREBASE_DATABASE_ID)
-      : getFirestore(app);
+    const db = adminApp.firestore();
+    const { action, key, durationDays = 30, tenantId = '', maxMachines = 1, extendDays = 30 } = req.body || {};
 
-    // 3. Traiter l'action demandée
     if (action === 'create') {
-      const { tenantId, durationDays = 90, maxMachines = 1 } = params || {};
-      
-      // Générer une clé CARI-XXXX-XXXX-XXXX-XXXX
-      const segments = [];
-      const chars = "ABCDEFGHJKLMNPQRSTUVWXYZ23456789"; // Sans 0, O, 1, I
-      for (let i = 0; i < 4; i++) {
-        let seg = "";
-        for (let j = 0; j < 4; j++) {
-          seg += chars.charAt(Math.floor(Math.random() * chars.length));
-        }
-        segments.push(seg);
-      }
-      const key = `CARI-${segments.join('-')}`;
-      
-      const now = new Date().toISOString();
-      const licenseRef = doc(firestore, 'licenses', key);
+      let generatedKey = '';
+      let exists = true;
+      let attempts = 0;
 
-      await setDoc(licenseRef, {
-        tenantId: tenantId || "",
-        durationDays: Number(durationDays) || 90,
+      while (exists && attempts < 10) {
+        generatedKey = generateKeyString();
+        const docRef = db.collection('licenses').doc(generatedKey);
+        const snap = await docRef.get();
+        exists = snap.exists;
+        attempts++;
+      }
+
+      if (exists) {
+        return res.status(500).json({ success: false, error: "Impossible de générer une clé unique." });
+      }
+
+      const nowIso = new Date().toISOString();
+      const licenseData = {
+        tenantId: typeof tenantId === 'string' ? tenantId.trim() : '',
+        durationDays: Number(durationDays) || 30,
         maxMachines: Number(maxMachines) || 1,
-        status: "unused",
-        machineId: "",
-        activatedAt: "",
-        expiresAt: "",
-        createdAt: now,
-        createdBy: email
-      });
+        status: 'unused',
+        machineId: '',
+        activatedAt: '',
+        expiresAt: '',
+        createdAt: nowIso,
+        createdBy: decodedToken.email || 'superadmin'
+      };
 
-      return res.status(200).json({ 
-        success: true, 
-        key, 
-        message: "Licence générée avec succès.",
-        details: {
-          tenantId: tenantId || "Non attribué",
-          durationDays: Number(durationDays) || 90,
-          maxMachines: Number(maxMachines) || 1
-        }
-      });
-    }
+      await db.collection('licenses').doc(generatedKey).set(licenseData);
 
-    if (action === 'revoke') {
-      const { key } = params || {};
-      if (!key) {
-        return res.status(400).json({ error: "Clé de licence obligatoire pour la révocation." });
-      }
-
-      const licenseRef = doc(firestore, 'licenses', key);
-      const snap = await getDoc(licenseRef);
-
-      if (!snap.exists()) {
-        return res.status(404).json({ error: "Licence introuvable." });
-      }
-
-      await updateDoc(licenseRef, {
-        status: "revoked",
-        revokedAt: new Date().toISOString(),
-        revokedBy: email
-      });
-
-      return res.status(200).json({ 
-        success: true, 
-        message: "Licence révoquée avec succès." 
+      return res.status(200).json({
+        success: true,
+        key: generatedKey,
+        ...licenseData
       });
     }
 
     if (action === 'list') {
-      // Optionnel : lister les licences (nécessiterait une requête Firestore plus complexe)
-      return res.status(200).json({ 
-        success: true, 
-        message: "Action 'list' non implémentée dans cette version." 
-      });
+      const snapshot = await db.collection('licenses').get();
+      const licenses = snapshot.docs.map((doc: any) => ({
+        key: doc.id,
+        id: doc.id,
+        ...doc.data()
+      }));
+      return res.status(200).json({ success: true, licenses });
     }
 
-    return res.status(400).json({ error: "Action non reconnue. Utilisez 'create', 'revoke' ou 'list'." });
+    if (action === 'revoke') {
+      if (!key) return res.status(400).json({ success: false, error: "Clé requise pour la révocation." });
+      const ref = db.collection('licenses').doc(key.trim().toUpperCase());
+      const snap = await ref.get();
+      if (!snap.exists) return res.status(404).json({ success: false, error: "Licence introuvable." });
 
-  } catch (error: any) {
-    console.error("Erreur api/admin-licenses:", error);
-    return res.status(500).json({ 
-      error: error.message || "Erreur interne lors de la gestion des licences." 
+      const nowIso = new Date().toISOString();
+      await ref.update({ status: 'revoked', revokedAt: nowIso, updatedAt: nowIso });
+      return res.status(200).json({ success: true, message: "Licence révoquée avec succès." });
+    }
+
+    if (action === 'extend') {
+      if (!key) return res.status(400).json({ success: false, error: "Clé requise pour l'extension." });
+      const ref = db.collection('licenses').doc(key.trim().toUpperCase());
+      const snap = await ref.get();
+      if (!snap.exists) return res.status(404).json({ success: false, error: "Licence introuvable." });
+
+      const data = snap.data() || {};
+      if (data.status === 'revoked') {
+        return res.status(400).json({ success: false, error: "Impossible de prolonger une licence révoquée." });
+      }
+
+      const addDays = Number(extendDays) || 30;
+      const nowIso = new Date().toISOString();
+
+      if (data.status === 'unused' || !data.status || !data.expiresAt) {
+        // Si unused, augmenter durationDays sans changer status/expiresAt
+        const currentDuration = Number(data.durationDays) || 30;
+        await ref.update({
+          durationDays: currentDuration + addDays,
+          updatedAt: nowIso
+        });
+        return res.status(200).json({ success: true, message: `Durée initiale augmentée de ${addDays} jours.` });
+      }
+
+      // Si active ou expired, étendre expiresAt (et remettre active si expired)
+      let currentExpires = new Date(data.expiresAt);
+      if (isNaN(currentExpires.getTime()) || currentExpires.getTime() < Date.now()) {
+        currentExpires = new Date();
+      }
+      const newExpires = new Date(currentExpires.getTime() + addDays * 24 * 60 * 60 * 1000).toISOString();
+
+      await ref.update({
+        expiresAt: newExpires,
+        status: 'active',
+        updatedAt: nowIso
+      });
+
+      return res.status(200).json({ success: true, message: `Licence prolongée de ${addDays} jours.`, expiresAt: newExpires });
+    }
+
+    if (action === 'delete') {
+      if (!key) return res.status(400).json({ success: false, error: "Clé requise pour la suppression." });
+      const ref = db.collection('licenses').doc(key.trim().toUpperCase());
+      await ref.delete();
+      return res.status(200).json({ success: true, message: "Licence supprimée." });
+    }
+
+    return res.status(400).json({ success: false, error: "Action non reconnue." });
+
+  } catch (err: any) {
+    console.error("Erreur api/admin-licenses:", err);
+    return res.status(500).json({
+      success: false,
+      error: err.message || "Erreur serveur administrateur des licences."
     });
   }
 }

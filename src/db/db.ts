@@ -263,10 +263,10 @@ export async function ensureDefaultUsersAndSettings() {
         tvaRate: settings?.tvaRate || 19,
         timbre: settings?.timbre || 1,
         timbreLimit: settings?.timbreLimit || 2500,
-        licenseKey: 'CARI-2026-SAAS-PRO-8942-X1',
-        licensePlan: 'SaaS Entreprise (1 An)',
-        licenseExpiry: oneYearFromNow,
-        licenseStatus: 'active'
+        licenseKey: '',
+        licensePlan: 'Non activée',
+        licenseExpiry: '',
+        licenseStatus: 'none'
       });
     }
   } catch (err) {
@@ -299,10 +299,10 @@ export async function initDemoData() {
     tvaRate: 19,
     timbre: 1,
     timbreLimit: 2500,
-    licenseKey: 'CARI-2026-SAAS-PRO-8942-X1',
-    licensePlan: 'SaaS Entreprise (1 An)',
-    licenseExpiry: oneYearFromNow,
-    licenseStatus: 'active'
+    licenseKey: '',
+    licensePlan: 'Non activée',
+    licenseExpiry: '',
+    licenseStatus: 'none'
   });
 
   await db.customerFamilies.bulkPut([

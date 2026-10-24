@@ -4,12 +4,12 @@ import { db } from '../../db/db';
 import { Input } from '../../components/ui/Input';
 import { Button } from '../../components/ui/Button';
 import { 
-  Save, ShieldCheck, KeyRound, CheckCircle2, 
-  Clock, Crown, Copy, Check, AlertTriangle,
+  Save, ShieldCheck, CheckCircle2, 
+  Clock, AlertTriangle,
   Upload, Image as ImageIcon, Trash2, Building2, Globe
 } from 'lucide-react';
 import { useAuthStore } from '../../store/authStore';
-import { generateSignedLicenseKey, verifyLicenseKey } from '../../lib/security';
+import { activateLicense, verifyLicenseOffline } from '../../lib/licensing';
 import { useTranslation } from '../../i18n';
 import { LanguageSelector } from '../../components/common/LanguageSelector';
 import { SuperAdminPanel } from '../admin/SuperAdminPanel';
@@ -22,7 +22,47 @@ export function SettingsModule() {
   const { t, language } = useTranslation();
   const fileInputRef = useRef<HTMLInputElement>(null);
 
-    const hasLicense = Boolean(user?.companyId && localStorage.getItem(`carisoft_tenant_${user.companyId}_license_key`));
+  const [hasLicense, setHasLicense] = useState(false);
+
+  useEffect(() => {
+    let isMounted = true;
+    const checkLicenseState = async () => {
+      if (typeof window !== 'undefined') {
+        const win = window as any;
+        const isTauri = Boolean(win.__TAURI_INTERNALS__ || win.__TAURI__);
+        if (isTauri) {
+          const invokeFn = win.__TAURI_INTERNALS__?.invoke || win.__TAURI__?.invoke || win.__TAURI__?.core?.invoke;
+          if (typeof invokeFn === 'function') {
+            try {
+              const status = await invokeFn('license_status');
+              if (isMounted) setHasLicense(status?.status === 'active');
+              return;
+            } catch {
+              if (isMounted) setHasLicense(false);
+              return;
+            }
+          }
+        }
+      }
+      // Mode Web
+      try {
+        const res = await verifyLicenseOffline(currentCompanyId);
+        if (isMounted) setHasLicense(res.status === 'active');
+      } catch {
+        if (isMounted) setHasLicense(false);
+      }
+    };
+
+    checkLicenseState();
+    const handleActivated = () => {
+      checkLicenseState();
+    };
+    window.addEventListener('license_activated', handleActivated);
+    return () => {
+      isMounted = false;
+      window.removeEventListener('license_activated', handleActivated);
+    };
+  }, [currentCompanyId]);
   const isSuperAdmin = Boolean(
     user?.role === 'superadmin' || 
     user?.email?.toLowerCase() === 'nabsterzero@gmail.com' || 
@@ -45,14 +85,6 @@ export function SettingsModule() {
   const [licenseError, setLicenseError] = useState<string | null>(null);
   const [licenseSuccess, setLicenseSuccess] = useState<string | null>(null);
 
-  // Super Admin Generator States
-  const [genCompanyName, setGenCompanyName] = useState('SARL MAHAJIR SIDAR');
-  const [genDurationDays, setGenDurationDays] = useState(365);
-  const [genPlan, setGenPlan] = useState('SaaS Entreprise (1 An)');
-  const [generatedKey, setGeneratedKey] = useState<string | null>(null);
-  const [generatedExpiry, setGeneratedExpiry] = useState<string | null>(null);
-  const [copied, setCopied] = useState(false);
-
   useEffect(() => {
     if (settingsDb) {
       setName(settingsDb.name);
@@ -64,11 +96,11 @@ export function SettingsModule() {
       setPhone(settingsDb.phone || '');
       setEmail(settingsDb.email || '');
       setLogoUrl(settingsDb.logoUrl || null);
-      setLicenseKey(hasLicense ? (settingsDb.licenseKey || 'CARI-2026-SAAS-PRO-8942-X1') : '');
-      setLicensePlan(hasLicense ? (settingsDb.licensePlan || 'SaaS Entreprise (1 An)') : 'Période d\'essai (Non Activée)');
-      setLicenseExpiry(hasLicense ? (settingsDb.licenseExpiry || new Date(Date.now() + 365 * 24 * 60 * 60 * 1000).toISOString()) : '');
+      setLicenseKey(settingsDb.licenseKey || '');
+      setLicensePlan(hasLicense ? (settingsDb.licensePlan || 'Licence Active') : 'Non Activée');
+      setLicenseExpiry(settingsDb.licenseExpiry || '');
     }
-  }, [settingsDb]);
+  }, [settingsDb, hasLicense]);
 
   // Handle Logo Upload with image compression & Base64 conversion
   const processImageFile = (file: File) => {
@@ -141,57 +173,22 @@ export function SettingsModule() {
     setLicenseError(null);
     setLicenseSuccess(null);
 
-    const verification = await verifyLicenseKey(licenseKey.trim(), name || 'SARL MAHAJIR SIDAR');
-    if (!verification.valid) {
-      setLicenseError(verification.reason || 'Clé de licence invalide ou non signée par le Super Admin.');
+    if (!licenseKey.trim()) {
+      setLicenseError('Veuillez saisir une clé de licence.');
       return;
     }
 
     try {
-      const updatedExpiry = verification.expiryDate || new Date(Date.now() + 365 * 24 * 60 * 60 * 1000).toISOString();
-      await db.settings.update(1, {
-        licenseKey: licenseKey.trim(),
-        licenseExpiry: updatedExpiry,
-        licenseStatus: 'active'
-      });
-      setLicenseExpiry(updatedExpiry);
-      setLicenseSuccess(`Licence 1 An validée et activée avec succès (${verification.daysRemaining || 365} jours restants) !`);
-    } catch (e) {
-      setLicenseError('Erreur lors de la mise à jour de la licence.');
+      const companyId = currentCompanyId || name || 'default-company';
+      const payload = await activateLicense(licenseKey.trim(), companyId);
+      const remainingDays = typeof payload.days_remaining === 'number'
+        ? payload.days_remaining
+        : (payload.expiresAt ? Math.ceil((new Date(payload.expiresAt).getTime() - Date.now()) / (1000 * 60 * 60 * 24)) : 0);
+      setLicenseExpiry(payload.expiresAt);
+      setLicenseSuccess(`Licence validée et activée avec succès (${remainingDays} jours restants) !`);
+    } catch (e: any) {
+      setLicenseError(e?.message || 'Erreur lors de l\'activation de la licence.');
     }
-  };
-
-  // Super Admin: Generate a brand new cryptographically signed key
-  const handleGenerateKey = async () => {
-    const res = await generateSignedLicenseKey(genCompanyName, genDurationDays, genPlan);
-    setGeneratedKey(res.licenseKey);
-    setGeneratedExpiry(new Date(res.expiryDate).toLocaleDateString('fr-FR'));
-    setCopied(false);
-  };
-
-  const handleApplyGeneratedKey = async () => {
-    if (!generatedKey) return;
-    setLicenseKey(generatedKey);
-    setLicensePlan(genPlan);
-    
-    const verification = await verifyLicenseKey(generatedKey, name);
-    const updatedExpiry = verification.expiryDate || new Date(Date.now() + genDurationDays * 24 * 60 * 60 * 1000).toISOString();
-    
-    await db.settings.update(1, {
-      licenseKey: generatedKey,
-      licensePlan: genPlan,
-      licenseExpiry: updatedExpiry,
-      licenseStatus: 'active'
-    });
-    setLicenseExpiry(updatedExpiry);
-    setLicenseSuccess('Nouvelle clé générée et appliquée immédiatement sur cette instance.');
-  };
-
-  const handleCopyKey = () => {
-    if (!generatedKey) return;
-    navigator.clipboard.writeText(generatedKey);
-    setCopied(true);
-    setTimeout(() => setCopied(false), 2000);
   };
 
   const handleSave = async () => {
@@ -307,7 +304,7 @@ export function SettingsModule() {
                 type="text" 
                 value={licenseKey} 
                 onChange={(e) => setLicenseKey(e.target.value)}
-                placeholder="CARI-2026-XXXX-XXXX"
+                placeholder="CARI-XXXX-XXXX-XXXX-XXXX"
                 className="w-full bg-slate-950/90 border border-slate-700 rounded-lg px-3 py-2 text-xs text-blue-300 font-mono focus:outline-none focus:ring-1 focus:ring-blue-500"
               />
             </div>
@@ -330,111 +327,6 @@ export function SettingsModule() {
           <SuperAdminPanel />
         </div>
       )}
-
-      {/* EXCLUSIVE SUPER ADMIN LICENSE GENERATOR */}
-      {isSuperAdmin ? (
-        <div className="bg-gradient-to-br from-purple-950/80 via-slate-900 to-slate-950 border border-purple-800/60 rounded-2xl p-6 text-white space-y-5 shadow-xl">
-          <div className="flex items-center justify-between border-b border-purple-800/40 pb-3">
-            <div className="flex items-center gap-2.5">
-              <div className="p-2 bg-amber-500/20 text-amber-300 rounded-lg border border-amber-500/30">
-                <Crown className="h-5 w-5 text-amber-400" />
-              </div>
-              <div>
-                <h3 className="font-bold text-base text-purple-200">
-                  Console Éditeur : Générateur de Clé de Licence SaaS (1 An)
-                </h3>
-                <p className="text-xs text-purple-300/80">
-                  Réservé au Super Administrateur (<strong>nabsterzero@gmail.com</strong>)
-                </p>
-              </div>
-            </div>
-            <span className="px-2.5 py-1 bg-purple-500/20 text-purple-300 rounded-md text-xs font-bold border border-purple-500/30">
-              ÉDITEUR OFFICIEL
-            </span>
-          </div>
-
-          <div className="grid grid-cols-1 sm:grid-cols-3 gap-4">
-            <div className="space-y-1 sm:col-span-1">
-              <label className="text-xs text-purple-200 font-semibold">Société Bénéficiaire</label>
-              <input 
-                type="text" 
-                value={genCompanyName}
-                onChange={(e) => setGenCompanyName(e.target.value)}
-                className="w-full px-3 py-2 bg-slate-950/80 border border-purple-800/60 rounded-lg text-xs text-white focus:outline-none focus:ring-1 focus:ring-purple-400"
-              />
-            </div>
-
-            <div className="space-y-1">
-              <label className="text-xs text-purple-200 font-semibold">Durée de Validité</label>
-              <select 
-                value={genDurationDays}
-                onChange={(e) => setGenDurationDays(Number(e.target.value))}
-                className="w-full px-3 py-2 bg-slate-950/80 border border-purple-800/60 rounded-lg text-xs text-white focus:outline-none focus:ring-1 focus:ring-purple-400"
-              >
-                <option value={365}>1 An (365 Jours - Pack Annuel Standard)</option>
-                <option value={180}>6 Mois (180 Jours - Pack Semestriel)</option>
-                <option value={90}>3 Mois (90 Jours - Pack Trimestriel)</option>
-                <option value={5}>5 Jours (Essai Gratuit)</option>
-                <option value={730}>2 Ans (730 Jours - Multi-Années)</option>
-              </select>
-            </div>
-
-            <div className="space-y-1">
-              <label className="text-xs text-purple-200 font-semibold">Formule / Plan</label>
-              <select 
-                value={genPlan}
-                onChange={(e) => setGenPlan(e.target.value)}
-                className="w-full px-3 py-2 bg-slate-950/80 border border-purple-800/60 rounded-lg text-xs text-white focus:outline-none focus:ring-1 focus:ring-purple-400"
-              >
-                <option value="SaaS Entreprise (1 An)">SaaS Entreprise (1 An)</option>
-                <option value="SaaS Pro Illimité">SaaS Pro Illimité</option>
-                <option value="SaaS Carrière Multi-Sites">SaaS Carrière Multi-Sites</option>
-              </select>
-            </div>
-          </div>
-
-          <div className="flex justify-end pt-2">
-            <Button 
-              onClick={handleGenerateKey}
-              className="bg-purple-600 hover:bg-purple-500 text-white font-semibold text-xs py-2.5 px-4 rounded-xl flex items-center gap-2"
-            >
-              <KeyRound className="h-4 w-4" />
-              Générer la Clé de Licence Cryptée (1 An)
-            </Button>
-          </div>
-
-          {generatedKey && (
-            <div className="p-4 bg-slate-950/90 border border-purple-700/60 rounded-xl space-y-3 animate-in fade-in">
-              <div className="flex items-center justify-between">
-                <span className="text-xs font-bold text-emerald-400 flex items-center gap-1.5">
-                  <CheckCircle2 className="h-4 w-4" /> Clé de Licence 1 An Signée avec Succès
-                </span>
-                <span className="text-xs text-slate-400">Expire le {generatedExpiry}</span>
-              </div>
-
-              <div className="p-3 bg-purple-950/50 rounded-lg border border-purple-800 font-mono text-sm font-bold text-purple-300 flex items-center justify-between">
-                <span className="select-all">{generatedKey}</span>
-                <button 
-                  onClick={handleCopyKey}
-                  className="p-1.5 hover:bg-purple-900/60 rounded-md text-purple-300 transition-colors flex items-center gap-1 text-xs"
-                >
-                  {copied ? <Check className="h-4 w-4 text-emerald-400" /> : <Copy className="h-4 w-4" />}
-                  {copied ? 'Copié !' : 'Copier'}
-                </button>
-              </div>
-
-              <div className="flex justify-end gap-2 pt-1">
-                <Button 
-                  onClick={handleApplyGeneratedKey}
-                  className="text-xs bg-emerald-600 hover:bg-emerald-500 text-white"
-                >
-                  Appliquer & Activer sur cette Carrière
-                </Button>
-              </div>
-            </div>
-          )}
-        </div>
-      ) : null}
 
       {/* Company Logo Upload & Preview Section */}
       <div className="bg-white p-6 rounded-xl border border-slate-200 shadow-sm space-y-4">

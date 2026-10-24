@@ -1,7 +1,7 @@
 import React, { useState } from 'react';
 import { X, Calendar, Key, Shield, Phone, Mail, Building, MapPin, User, Sparkles, Check, Clock } from 'lucide-react';
 import { doc, updateDoc, setDoc } from 'firebase/firestore';
-import { firestore } from '../../lib/firebase';
+import { firestore, auth } from '../../lib/firebase';
 import { db } from '../../db/db';
 
 interface EditCompanyModalProps {
@@ -64,14 +64,37 @@ export function EditCompanyModal({ customer, onClose, onRefresh }: EditCompanyMo
     }
   };
 
-  // Generate a new secure formatted key
-  const handleGenerateKey = () => {
-    const cleanCompany = (email.split('@')[0] || name || 'CARRIE').toUpperCase().replace(/[^A-Z0-9]/g, '').slice(0, 6) || 'CARRIE';
-    const planTag = licensePlan.toLowerCase().includes('essai') ? 'TRIAL' : 'PAID1Y';
-    const rand = Math.random().toString(36).substring(2, 6).toUpperCase();
-    const time = Date.now().toString(36).toUpperCase().slice(-4);
-    const newKey = `CARI-2026-${planTag}-${cleanCompany}-${time}-${rand}`;
-    setLicenseKey(newKey);
+  // Generate a new secure formatted key via admin API
+  const handleGenerateKey = async () => {
+    try {
+      const currentUser = auth.currentUser;
+      if (!currentUser) throw new Error("SuperAdmin non authentifié");
+      const idToken = await currentUser.getIdToken();
+      const docId = customer.uid || customer.id || email;
+      const days = licensePlan.toLowerCase().includes('3 mois') ? 90 :
+                   licensePlan.toLowerCase().includes('6 mois') ? 180 :
+                   licensePlan.toLowerCase().includes('essai') ? 30 : 365;
+
+      const resp = await fetch('https://carisoft.vercel.app/api/admin-licenses', {
+        method: 'POST',
+        headers: {
+          'Content-Type': 'application/json',
+          'Authorization': `Bearer ${idToken}`
+        },
+        body: JSON.stringify({
+          action: 'create',
+          tenantId: docId,
+          durationDays: days,
+          maxMachines: 1
+        })
+      });
+      const data = await resp.json();
+      if (data.success && data.key) {
+        setLicenseKey(data.key);
+      }
+    } catch (e) {
+      console.warn("Erreur génération clé via API:", e);
+    }
   };
 
   const handleSubmit = async (e: React.FormEvent) => {
@@ -289,6 +312,7 @@ export function EditCompanyModal({ customer, onClose, onRefresh }: EditCompanyMo
                   <option value="PRO 1 An">PRO Annuel (1 An)</option>
                   <option value="PRO 6 Mois">PRO Semestriel (6 Mois)</option>
                   <option value="PRO 3 Mois">PRO Trimestriel (3 Mois)</option>
+                  <option value="Essai Gratuit (30 Jours)">Essai Gratuit (30 Jours)</option>
                   <option value="Essai Gratuit (5 Jours)">Essai Gratuit (5 Jours)</option>
                   <option value="Permanent Illimité">Permanent Illimité</option>
                   <option value="Personnalisé">Personnalisé</option>
@@ -414,7 +438,7 @@ export function EditCompanyModal({ customer, onClose, onRefresh }: EditCompanyMo
                   value={licenseKey}
                   onChange={(e) => setLicenseKey(e.target.value)}
                   className="w-full bg-slate-950 border border-slate-800 rounded-xl pl-9.5 pr-3 py-2.5 text-xs font-mono text-amber-300 focus:outline-none focus:border-blue-500 transition-colors"
-                  placeholder="CARI-2026-PAID1Y-XXXX-XXXX"
+                  placeholder="CARI-XXXX-XXXX-XXXX-XXXX"
                 />
               </div>
             </div>
