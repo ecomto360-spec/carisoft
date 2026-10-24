@@ -1,3 +1,4 @@
+import { getFirestore } from 'firebase-admin/firestore';
 import * as admin from 'firebase-admin';
 import nacl from 'tweetnacl';
 import { Buffer } from 'buffer';
@@ -88,7 +89,7 @@ export default async function handler(req: any, res: any) {
 
   try {
     initAdmin();
-    const db = adminApp.firestore();
+    const db = (process.env.FIREBASE_DATABASE_ID ? getFirestore(adminApp.app(), process.env.FIREBASE_DATABASE_ID) : getFirestore(adminApp.app()));
 
     const { key, machineId, tenantId } = req.body || {};
 

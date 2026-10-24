@@ -1,3 +1,4 @@
+import { getFirestore } from 'firebase-admin/firestore';
 import * as admin from 'firebase-admin';
 import crypto from 'crypto';
 
@@ -95,7 +96,7 @@ export default async function handler(req: any, res: any) {
       return res.status(403).json({ success: false, error: "Accès refusé : privilèges SuperAdmin requis." });
     }
 
-    const db = adminApp.firestore();
+    const db = (process.env.FIREBASE_DATABASE_ID ? getFirestore(adminApp.app(), process.env.FIREBASE_DATABASE_ID) : getFirestore(adminApp.app()));
     const { action, key, durationDays = 30, tenantId = '', maxMachines = 1, extendDays = 30 } = req.body || {};
 
     if (action === 'create') {
