@@ -1,39 +1,22 @@
 ﻿import type { VercelRequest, VercelResponse } from '@vercel/node';
-import * as adminModule from 'firebase-admin';
-import { getFirestore } from 'firebase-admin/firestore';
-
-const admin = (adminModule as any).default || adminModule;
-
-if (!admin.apps || admin.apps.length === 0) {
-  let serviceAccount: any = {};
-  try {
-    const rawEnv = process.env.FIREBASE_SERVICE_ACCOUNT || '{}';
-    serviceAccount = JSON.parse(rawEnv);
-    if (serviceAccount.private_key) {
-      serviceAccount.private_key = serviceAccount.private_key.replace(/\\n/g, '\n');
-    }
-  } catch (e) {
-    console.error('Failed to parse FIREBASE_SERVICE_ACCOUNT JSON:', e);
-  }
-  admin.initializeApp({
-    credential: admin.credential.cert(serviceAccount)
-  });
-}
-
-const db = getFirestore();
 
 export default async function handler(req: VercelRequest, res: VercelResponse) {
-  if (req.method !== 'POST') {
-    return res.status(405).json({ error: 'Method not allowed' });
-  }
-
   try {
-    const { key, machineId } = req.body;
+    res.setHeader('Access-Control-Allow-Origin', '*');
+    res.setHeader('Access-Control-Allow-Methods', 'POST, OPTIONS');
+    res.setHeader('Access-Control-Allow-Headers', 'Content-Type, Authorization');
+    if (req.method === 'OPTIONS') return res.status(204).end();
+    if (req.method !== 'POST') return res.status(405).json({ error: 'Method not allowed' });
+
+    const { key, machineId } = req.body || {};
     if (!key || !machineId) {
       return res.status(400).json({ error: 'Key and machineId are required' });
     }
 
-    const licenseRef = db.collection('licenses').doc(key);
+    const { db } = await import('./_lib/firebase.js');
+    const { db: firestore } = await db({ withAuth: false });
+
+    const licenseRef = firestore.collection('licenses').doc(key);
     const doc = await licenseRef.get();
 
     if (!doc.exists) {
@@ -57,7 +40,11 @@ export default async function handler(req: VercelRequest, res: VercelResponse) {
 
     return res.status(200).json({ success: true, message: 'License activated successfully', expiresAt });
   } catch (error: any) {
-    console.error('Error in activate-license:', error);
-    return res.status(500).json({ error: error.message });
+    console.error('[activate-license] Error:', error);
+    return res.status(500).json({
+      success: false,
+      error: error.message,
+      stack: error.stack || null
+    });
   }
 }

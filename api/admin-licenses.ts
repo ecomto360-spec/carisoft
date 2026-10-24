@@ -1,55 +1,31 @@
 ﻿import type { VercelRequest, VercelResponse } from '@vercel/node';
-import * as adminModule from 'firebase-admin';
-import { getFirestore } from 'firebase-admin/firestore';
-
-const admin = (adminModule as any).default || adminModule;
-
-if (!admin.apps || admin.apps.length === 0) {
-  let serviceAccount: any = {};
-  try {
-    const rawEnv = process.env.FIREBASE_SERVICE_ACCOUNT || '{}';
-    serviceAccount = JSON.parse(rawEnv);
-    if (serviceAccount.private_key) {
-      serviceAccount.private_key = serviceAccount.private_key.replace(/\\n/g, '\n');
-    }
-  } catch (e) {
-    console.error('Failed to parse FIREBASE_SERVICE_ACCOUNT JSON:', e);
-  }
-  admin.initializeApp({
-    credential: admin.credential.cert(serviceAccount)
-  });
-}
-
-const authAppName = 'auth';
-let authApp = admin.apps.find((app: any) => app?.name === authAppName);
-if (!authApp) {
-  authApp = admin.initializeApp({
-    projectId: process.env.AUTH_PROJECT_ID || 'googly-keep-3n96h'
-  }, authAppName);
-}
-
-const db = getFirestore();
-const auth = admin.auth(authApp);
 
 export default async function handler(req: VercelRequest, res: VercelResponse) {
-  if (req.method !== 'POST') {
-    return res.status(405).json({ error: 'Method not allowed' });
-  }
-
   try {
+    res.setHeader('Access-Control-Allow-Origin', '*');
+    res.setHeader('Access-Control-Allow-Methods', 'POST, OPTIONS');
+    res.setHeader('Access-Control-Allow-Headers', 'Content-Type, Authorization');
+    if (req.method === 'OPTIONS') return res.status(204).end();
+    if (req.method !== 'POST') return res.status(405).json({ error: 'Method not allowed' });
+
     const authHeader = req.headers.authorization;
     if (!authHeader || !authHeader.startsWith('Bearer ')) {
       return res.status(401).json({ error: 'Unauthorized: No token provided' });
     }
-
     const token = authHeader.split('Bearer ')[1];
-    await auth.verifyIdToken(token);
-    
-    const { action, durationDays, tenantId, key } = req.body;
+
+    const { db } = await import('./_lib/firebase.js');
+    const { db: firestore, auth } = await db({ withAuth: true });
+
+    if (auth) {
+      await auth.verifyIdToken(token);
+    }
+
+    const { action, durationDays, tenantId, key } = req.body || {};
 
     if (action === 'create') {
       const licenseKey = key || `CARI-${Math.random().toString(36).substring(2, 10).toUpperCase()}`;
-      const licenseRef = db.collection('licenses').doc(licenseKey);
+      const licenseRef = firestore.collection('licenses').doc(licenseKey);
       
       await licenseRef.set({
         status: 'unused',
@@ -64,12 +40,16 @@ export default async function handler(req: VercelRequest, res: VercelResponse) {
       return res.status(200).json({ success: true, key: licenseKey });
     }
 
-    const snapshot = await db.collection('licenses').get();
+    const snapshot = await firestore.collection('licenses').get();
     const licenses = snapshot.docs.map(doc => ({ id: doc.id, ...doc.data() }));
 
     return res.status(200).json({ success: true, licenses });
   } catch (error: any) {
-    console.error('Error in admin-licenses:', error);
-    return res.status(500).json({ error: error.message });
+    console.error('[admin-licenses] Error:', error);
+    return res.status(500).json({
+      success: false,
+      error: error.message,
+      stack: error.stack || null
+    });
   }
 }
