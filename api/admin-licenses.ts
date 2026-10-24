@@ -1,6 +1,8 @@
 ﻿import type { VercelRequest, VercelResponse } from '@vercel/node';
-import admin from 'firebase-admin';
+import * as adminModule from 'firebase-admin';
 import { getFirestore } from 'firebase-admin/firestore';
+
+const admin = (adminModule as any).default || adminModule;
 
 if (!admin.apps || admin.apps.length === 0) {
   let serviceAccount: any = {};
@@ -11,7 +13,7 @@ if (!admin.apps || admin.apps.length === 0) {
       serviceAccount.private_key = serviceAccount.private_key.replace(/\\n/g, '\n');
     }
   } catch (e) {
-    console.error('Failed to parse FIREBASE_SERVICE_ACCOUNT:', e);
+    console.error('Failed to parse FIREBASE_SERVICE_ACCOUNT JSON:', e);
   }
   admin.initializeApp({
     credential: admin.credential.cert(serviceAccount)
@@ -19,7 +21,7 @@ if (!admin.apps || admin.apps.length === 0) {
 }
 
 const authAppName = 'auth';
-let authApp = admin.apps.find(app => app?.name === authAppName);
+let authApp = admin.apps.find((app: any) => app?.name === authAppName);
 if (!authApp) {
   authApp = admin.initializeApp({
     projectId: process.env.AUTH_PROJECT_ID || 'googly-keep-3n96h'
