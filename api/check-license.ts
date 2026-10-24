@@ -11,8 +11,8 @@ export default async function handler(req: VercelRequest, res: VercelResponse) {
     const { key, machineId } = req.body || {};
     if (!key) return res.status(400).json({ error: 'Key is required' });
 
-    const { db } = await import('./_lib/firebase.js');
-    const { db: firestore } = await db({ withAuth: false });
+    const { initFirebaseClients } = await import('./_lib/firebase.js');
+    const { db: firestore } = await initFirebaseClients({ withAuth: false });
 
     const licenseRef = firestore.collection('licenses').doc(key);
     const doc = await licenseRef.get();

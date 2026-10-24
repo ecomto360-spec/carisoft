@@ -14,8 +14,8 @@ export default async function handler(req: VercelRequest, res: VercelResponse) {
     }
     const token = authHeader.split('Bearer ')[1];
 
-    const { db } = await import('./_lib/firebase.js');
-    const { db: firestore, auth } = await db({ withAuth: true });
+    const { initFirebaseClients } = await import('./_lib/firebase.js');
+    const { db: firestore, auth } = await initFirebaseClients({ withAuth: true });
 
     if (auth) {
       await auth.verifyIdToken(token);
