@@ -1,42 +1,145 @@
-﻿import type { VercelRequest, VercelResponse } from '@vercel/node';
+﻿import { initializeApp, cert, getApps, getApp } from 'firebase-admin/app';
+import { getFirestore } from 'firebase-admin/firestore';
+import nacl from 'tweetnacl';
+import { Buffer } from 'buffer';
 
-export default async function handler(req: VercelRequest, res: VercelResponse) {
+const ALLOWED_ORIGINS = [
+  'https://carisoft.vercel.app',
+  'https://tauri.localhost',
+  'http://tauri.localhost',
+  'tauri://localhost',
+  'http://localhost:5173'
+];
+
+function setCors(req: any, res: any) {
+  const origin = req.headers.origin;
+  if (origin && ALLOWED_ORIGINS.includes(origin)) {
+    res.setHeader('Access-Control-Allow-Origin', origin);
+  } else {
+    res.setHeader('Access-Control-Allow-Origin', 'https://carisoft.vercel.app');
+  }
+  res.setHeader('Vary', 'Origin');
+  res.setHeader('Access-Control-Allow-Credentials', 'true');
+  res.setHeader('Access-Control-Allow-Methods', 'GET,OPTIONS,PATCH,DELETE,POST,PUT');
+  res.setHeader('Access-Control-Allow-Headers', 'X-CSRF-Token, X-Requested-With, Accept, Accept-Version, Content-Length, Content-MD5, Content-Type, Date, X-Api-Version, Authorization');
+}
+
+const admin = {
+  get apps() {
+    return getApps();
+  }
+};
+
+function initAdmin() {
+  if (!admin.apps || admin.apps.length === 0) {
+    const serviceAccountRaw = process.env.FIREBASE_SERVICE_ACCOUNT;
+    if (!serviceAccountRaw) {
+      throw new Error("Variable d'environnement FIREBASE_SERVICE_ACCOUNT manquante.");
+    }
+    return initializeApp({
+      credential: cert(JSON.parse(serviceAccountRaw))
+    });
+  }
+  return admin.apps.find(a => a.name === '[DEFAULT]') || getApp();
+}
+
+function signPayload(payloadObj: object, privateKeyBase64: string): string {
+  const payloadJson = JSON.stringify(payloadObj);
+  const payloadBytes = Buffer.from(payloadJson, 'utf8');
+  const privKeyBytes = Buffer.from(privateKeyBase64, 'base64');
+  let secretKey = privKeyBytes;
+  if (privKeyBytes.length === 32) {
+    const keyPair = nacl.sign.keyPair.fromSeed(privKeyBytes);
+    secretKey = Buffer.from(keyPair.secretKey);
+  }
+  const signature = nacl.sign.detached(payloadBytes, secretKey);
+  const payloadBase64 = payloadBytes.toString('base64');
+  const signatureBase64 = Buffer.from(signature).toString('base64');
+  return `${payloadBase64}.${signatureBase64}`;
+}
+
+export default async function handler(req: any, res: any) {
+  setCors(req, res);
+
+  if (req.method === 'OPTIONS') {
+    return res.status(200).end();
+  }
+
+  if (req.method !== 'POST') {
+    return res.status(405).json({ success: false, error: 'Méthode non autorisée.' });
+  }
+
+  const privateKeyBase64 = process.env.LICENSE_PRIVATE_KEY;
+  if (!privateKeyBase64) {
+    return res.status(500).json({ success: false, error: "Configuration serveur incomplète (LICENSE_PRIVATE_KEY manquante)." });
+  }
+
   try {
-    res.setHeader('Access-Control-Allow-Origin', '*');
-    res.setHeader('Access-Control-Allow-Methods', 'POST, OPTIONS');
-    res.setHeader('Access-Control-Allow-Headers', 'Content-Type, Authorization');
-    if (req.method === 'OPTIONS') return res.status(204).end();
-    if (req.method !== 'POST') return res.status(405).json({ error: 'Method not allowed' });
+    const defaultApp = initAdmin();
+    const db = getFirestore(defaultApp);
 
     const { key, machineId } = req.body || {};
-    if (!key) return res.status(400).json({ error: 'Key is required' });
-
-    const { initFirebaseClients } = await import('./_lib/firebase.js');
-    const { db: firestore } = await initFirebaseClients({ withAuth: false });
-
-    const licenseRef = firestore.collection('licenses').doc(key);
-    const doc = await licenseRef.get();
-
-    if (!doc.exists) {
-      return res.status(404).json({ error: 'License not found' });
+    if (!key || typeof key !== 'string') {
+      return res.status(400).json({ success: false, error: "Clé de licence obligatoire." });
+    }
+    if (!machineId || typeof machineId !== 'string' || !machineId.trim()) {
+      return res.status(400).json({ success: false, error: "machineId obligatoire pour vérifier la licence." });
     }
 
-    const data = doc.data()!;
-    if (data.status === 'unused') {
-      return res.status(200).json({ status: 'unused', message: "N'a pas encore été activée" });
+    const cleanKey = key.trim().toUpperCase();
+    const cleanMachineId = machineId.trim();
+    const serverTime = new Date().toISOString();
+    const nowMs = Date.now();
+
+    const licenseRef = db.collection('licenses').doc(cleanKey);
+    const docSnap = await licenseRef.get();
+
+    if (!docSnap.exists) {
+      return res.status(200).json({ success: true, status: 'revoked', error: "Licence introuvable." });
     }
 
-    if (machineId && data.machineId && data.machineId !== machineId) {
-      return res.status(400).json({ error: 'Machine ID mismatch' });
+    const data = docSnap.data() || {};
+
+    if (data.status === 'unused' || !data.status) {
+      return res.status(400).json({ success: false, status: 'unused', error: "Cette licence n'a pas encore été activée." });
     }
 
-    return res.status(200).json({ success: true, status: data.status, expiresAt: data.expiresAt });
+    if (data.status === 'revoked') {
+      return res.status(200).json({ success: true, status: 'revoked', error: "Licence révoquée." });
+    }
+
+    if (data.expiresAt && new Date(data.expiresAt).getTime() < nowMs) {
+      await licenseRef.update({ status: 'expired', updatedAt: serverTime });
+      return res.status(200).json({ success: true, status: 'expired', error: "Licence expirée." });
+    }
+
+    if (data.machineId && data.machineId !== cleanMachineId) {
+      return res.status(200).json({ success: true, status: 'invalid', error: "Licence liée à un autre PC." });
+    }
+
+    const payload = {
+      key: cleanKey,
+      tenantId: data.tenantId || '',
+      machineId: data.machineId || cleanMachineId,
+      activatedAt: data.activatedAt || serverTime,
+      expiresAt: data.expiresAt || serverTime,
+      serverTime
+    };
+
+    const token = signPayload(payload, privateKeyBase64);
+
+    return res.status(200).json({
+      success: true,
+      status: data.status || 'active',
+      token,
+      serverTime
+    });
+
   } catch (error: any) {
-    console.error('[check-license] Error:', error);
-    return res.status(500).json({
+    console.error("Erreur api/check-license:", error);
+    return res.status(400).json({
       success: false,
-      error: error.message,
-      stack: error.stack || null
+      error: error.message || "Erreur lors de la vérification."
     });
   }
 }
