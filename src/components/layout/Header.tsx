@@ -7,6 +7,7 @@ import { useLiveQuery } from 'dexie-react-hooks';
 import { db } from '../../db/db';
 import { LicenseActivationModal } from '../licensing/LicenseActivationModal';
 import { PaidLicenseModal } from '../licensing/PaidLicenseModal';
+import { startLicenseWatcher, verifyLicenseOffline, type LicenseCheckResult } from '../../lib/licensing';
 import { useTranslation } from '../../i18n';
 import { LanguageSelector } from '../common/LanguageSelector';
 import { NotificationDropdown } from '../notifications/NotificationDropdown';
@@ -63,11 +64,27 @@ export function Header() {
     }
   };
 
-  const isTrial = settings?.licensePlan?.includes('Essai') || settings?.licensePlan?.includes('5 Jours');
+  const [liveLicense, setLiveLicense] = useState<LicenseCheckResult | null>(null);
+  const tenantId = user?.companyId || (settings as any)?.companyId || 'default-company';
 
-  const expiryDays = settings?.licenseExpiry 
-    ? Math.max(0, Math.ceil((new Date(settings.licenseExpiry).getTime() - Date.now()) / (1000 * 60 * 60 * 24)))
-    : 365;
+  useEffect(() => {
+    if (!user || isSuperAdmin) return;
+    const unsub = startLicenseWatcher(tenantId, (res) => setLiveLicense(res));
+    const onActivated = async () => setLiveLicense(await verifyLicenseOffline(tenantId));
+    window.addEventListener('license_activated', onActivated);
+    return () => {
+      unsub();
+      window.removeEventListener('license_activated', onActivated);
+    };
+  }, [user, tenantId, isSuperAdmin]);
+
+  const isTrial = !liveLicense?.valid && (settings?.licensePlan?.includes('Essai') || settings?.licensePlan?.includes('5 Jours'));
+
+  const expiryDays = liveLicense?.valid
+    ? liveLicense.daysRemaining
+    : (settings?.licenseExpiry
+        ? Math.max(0, Math.ceil((new Date(settings.licenseExpiry).getTime() - Date.now()) / (1000 * 60 * 60 * 24)))
+        : 0);
 
   const roleLabel = {
     superadmin: t.roles.superadmin,

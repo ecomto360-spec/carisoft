@@ -8,7 +8,7 @@ use std::fs;
 use tauri::api::path::app_data_dir;
 
 const SALT: &[u8] = b"CARISOFT_LICENSE_SALT_2026_SECURE";
-const PUBLIC_KEY_B64: &str = "UQ9nFmf39EE40KCYi9ioxBgobS+IOPX97c/U+3+mMM4=";
+const PUBLIC_KEY_B64: &str = "DlgVvWbyqlQ0R8t0kiHtfxkDGkMfPdkThnle3dyIoP8=";
 
 #[derive(Serialize, Deserialize, Clone, Debug)]
 pub struct LicenseState {
