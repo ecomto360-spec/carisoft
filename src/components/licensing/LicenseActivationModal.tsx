@@ -35,7 +35,7 @@ export function LicenseActivationModal({ onClose }: { onClose: () => void }) {
       }, 1500);
     } catch (err: any) {
       console.warn("Erreur activation licence:", err);
-      setError(err.message || "Erreur lors de l'activation de la licence.");
+      setError(typeof err === "string" ? err : (err?.message || "Erreur lors de l'activation de la licence."));
     } finally {
       setLoading(false);
     }

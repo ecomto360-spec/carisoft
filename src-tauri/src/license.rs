@@ -5,11 +5,10 @@ use rand::RngCore;
 use serde::{Deserialize, Serialize};
 use sha2::{Digest, Sha256};
 use std::fs;
-use std::path::PathBuf;
 use tauri::api::path::app_data_dir;
 
 const SALT: &[u8] = b"CARISOFT_LICENSE_SALT_2026_SECURE";
-const PUBLIC_KEY_B64: &str = "8fq3bGylqk50LrLbpV4URKQeuP4HyrNNoRuUc1G1ZvU=";
+const PUBLIC_KEY_B64: &str = "UQ9nFmf39EE40KCYi9ioxBgobS+IOPX97c/U+3+mMM4=";
 
 #[derive(Serialize, Deserialize, Clone, Debug)]
 pub struct LicenseState {
@@ -75,7 +74,7 @@ fn save_state(app_handle: &tauri::AppHandle, state: &LicenseState) -> Result<(),
     let json_bytes = serde_json::to_vec(state).map_err(|e| e.to_string())?;
     let encrypted = encrypt_data(&json_bytes, &enc_key)?;
 
-    if let Some(app_dir) = app_data_dir(app_handle.config()) {
+    if let Some(app_dir) = app_data_dir(&app_handle.config()) {
         let _ = fs::create_dir_all(&app_dir);
         let file_path = app_dir.join("license.dat");
         let _ = fs::write(file_path, &encrypted);
@@ -102,7 +101,7 @@ fn load_state(app_handle: &tauri::AppHandle) -> Result<Option<LicenseState>, Str
     let hwid = get_machine_hardware_id()?;
     let enc_key = derive_encryption_key(&hwid);
 
-    let app_dir = app_data_dir(app_handle.config());
+    let app_dir = app_data_dir(&app_handle.config());
     let file_path = app_dir.map(|d| d.join("license.dat"));
 
     #[cfg(target_os = "windows")]
@@ -341,7 +340,7 @@ pub fn license_diagnostics(app_handle: tauri::AppHandle) -> Result<serde_json::V
 #[tauri::command]
 pub async fn license_admin(app_handle: tauri::AppHandle, action: String) -> Result<serde_json::Value, String> {
     if action == "reset" {
-        if let Some(app_dir) = app_data_dir(app_handle.config()) {
+        if let Some(app_dir) = app_data_dir(&app_handle.config()) {
             let file_path = app_dir.join("license.dat");
             let _ = fs::remove_file(file_path);
         }

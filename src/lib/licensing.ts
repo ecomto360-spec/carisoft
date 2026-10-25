@@ -7,7 +7,7 @@ import type { LicenseTokenPayload, LicenseStateRecord } from '../types';
 export const API_BASE = 'https://carisoft.vercel.app';
 
 // Clé publique Ed25519 officielle embarquée dans le frontend uniquement pour la version web (affichage / vérification légère hors-ligne)
-export const PUBLIC_KEY_BASE64 = "8fq3bGylqk50LrLbpV4URKQeuP4HyrNNoRuUc1G1ZvU=";
+export const PUBLIC_KEY_BASE64 = "UQ9nFmf39EE40KCYi9ioxBgobS+IOPX97c/U+3+mMM4=";
 
 /**
  * Récupère l'identifiant matériel unique de la machine (SHA-256 du machine-uid en Tauri).
