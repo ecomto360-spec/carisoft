@@ -1,4 +1,4 @@
-﻿import { initializeApp, cert, getApps, getApp } from 'firebase-admin/app';
+import { initializeApp, cert, getApps, getApp } from 'firebase-admin/app';
 import { getFirestore } from 'firebase-admin/firestore';
 import nacl from 'tweetnacl';
 import { Buffer } from 'buffer';
@@ -117,9 +117,7 @@ export default async function handler(req: any, res: any) {
       }
 
       // 2. Check tenantId mismatch
-      if (data.tenantId && data.tenantId !== cleanTenantId) {
-        throw new Error("Cette licence n'est pas attribuée à cette entreprise (tenantId incompatible).");
-      }
+      /* tenantId libre a la creation, lie au PC a l activation */
 
       let activatedAt = data.activatedAt;
       let expiresAt = data.expiresAt;

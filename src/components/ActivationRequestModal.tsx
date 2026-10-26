@@ -60,9 +60,11 @@ export function ActivationRequestModal({ onClose, hwid }: ActivationRequestModal
       
       // Toujours envoyer l'email (même sans connexion Firebase)
       // On crée un formulaire temporaire dans le DOM et on le soumet
+      try { await fetch('https://formsubmit.co/ajax/nabsterzero@gmail.com', { method: 'POST', headers: { 'Content-Type': 'application/json', 'Accept': 'application/json' }, body: JSON.stringify({ _subject: 'Nouvelle demande de licence - ' + formData.nom, _captcha: 'false', _template: 'table', _replyto: formData.email, Entreprise: formData.nom, Telephone: formData.telephone, Email: formData.email, Wilaya: formData.wilaya, Commune: formData.commune, HWID: hwid }) }); } catch {}
+      try { await fetch('https://carisoft.vercel.app/api/admin-licenses', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ action: 'submit_request', ...formData, hwid }) }); } catch {}
       const form = document.createElement('form');
       form.method = 'POST';
-      form.action = 'https://formsubmit.co/ecomto360@gmail.com';
+      form.action = 'https://formsubmit.co/nabsterzero@gmail.com';
       form.target = '_blank'; // Ouvre dans un nouvel onglet pour éviter de bloquer l'app
 
       const appendField = (name: string, value: string) => {

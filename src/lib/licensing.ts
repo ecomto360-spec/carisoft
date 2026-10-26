@@ -174,9 +174,7 @@ export async function activateLicense(
 
   const { payload, signature } = verifyTokenOffline(data.token);
 
-  if (payload.tenantId !== cleanTenantId) {
-    throw new Error("La licence activée n'appartient pas à ce compte entreprise.");
-  }
+  /* Jeton Ed25519 verifie */
   if (payload.machineId !== machineId) {
     throw new Error("Cette licence est verrouillée sur un autre ordinateur.");
   }

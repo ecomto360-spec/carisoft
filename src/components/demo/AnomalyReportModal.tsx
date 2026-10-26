@@ -109,7 +109,7 @@ ${description || 'Aucune description fournie.'}
     });
     const subject = encodeURIComponent(`[CARISOFT DÉMO] Anomalie signalée : ${module} - ${title}`);
     const body = encodeURIComponent(generateReportText());
-    window.location.href = `mailto:ecomto360@gmail.com?subject=${subject}&body=${body}`;
+    window.location.href = `mailto:nabsterzero@gmail.com?subject=${subject}&body=${body}`;
     setIsSuccess(true);
   };
 

@@ -1,4 +1,6 @@
 import React, { useState, useEffect } from 'react';
+import { signOut } from 'firebase/auth';
+import { auth } from '../lib/firebase';
 import { useAuthStore } from '../store/authStore';
 import { startLicenseWatcher, type LicenseCheckResult, verifyLicenseOffline } from '../lib/licensing';
 import { getRemainingTrialDays } from '../lib/trialManager';
@@ -216,6 +218,12 @@ function LockScreen({ icon, title, message, onOpenActivation, onOpenRequest }: L
           </svg>
           Support WhatsApp
         </a>
+        <button
+          onClick={async () => { try { await signOut(auth); } catch {} useAuthStore.getState().logout(); window.location.href = "/login"; }}
+          className="w-full mt-3 border border-slate-700 hover:bg-slate-800 text-slate-300 font-medium py-2.5 rounded-xl transition-colors text-xs cursor-pointer"
+        >
+          {"Se d\u00e9connecter / Changer de compte"}
+        </button>
       </div>
 
       {showModal && <LicenseActivationModal onClose={() => setShowModal(false)} />}
